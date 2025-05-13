@@ -1,4 +1,6 @@
+
 import os
+import json
 import requests
 import telebot
 from openpyxl import Workbook
@@ -7,65 +9,93 @@ import threading
 import http.server
 import socketserver
 
-# API ключи
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
-HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# Получение транзакций от Helius
-def get_token_transfers(wallet):
-    url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100&parsedTransactionHistory=true"
-    response = requests.get(url)
+# Получение списка транзакций по адресу
+def get_transaction_signatures(wallet):
+    url = "https://api.mainnet-beta.solana.com"
+    headers = {"Content-Type": "application/json"}
+    payload = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "getSignaturesForAddress",
+        "params": [
+            wallet,
+            {"limit": 10}
+        ]
+    }
+    response = requests.post(url, headers=headers, data=json.dumps(payload))
     if response.status_code != 200:
         return []
 
-    txs = response.json()
-    token_data = []
+    return [tx["signature"] for tx in response.json().get("result", [])]
 
-    for tx in txs:
-        if tx.get("type") == "SWAP":
-            timestamp = datetime.fromtimestamp(tx.get("timestamp", 0))
-            swap_data = tx.get("events", {}).get("swap")
+# Получение и разбор транзакции
+def get_token_transfers(wallet):
+    signatures = get_transaction_signatures(wallet)
+    url = "https://api.mainnet-beta.solana.com"
+    headers = {"Content-Type": "application/json"}
+    result_data = []
 
-            if isinstance(swap_data, dict):
-                native_input = swap_data.get("nativeInput") or []
-                native_output = swap_data.get("nativeOutput") or []
+    for sig in signatures:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getParsedTransaction",
+            "params": [
+                sig,
+                {"encoding": "jsonParsed"}
+            ]
+        }
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
+        if response.status_code != 200:
+            continue
 
-                for event in native_input:
-                    if isinstance(event, dict):
-                        token_data.append({
-                            "Token": event.get("mint", "Unknown"),
-                            "Amount": event.get("amount", 0),
-                            "Direction": "Buy",
-                            "Date": timestamp.strftime("%Y-%m-%d %H:%M")
-                        })
+        parsed = response.json().get("result")
+        if not parsed:
+            continue
 
-                for event in native_output:
-                    if isinstance(event, dict):
-                        token_data.append({
-                            "Token": event.get("mint", "Unknown"),
-                            "Amount": event.get("amount", 0),
-                            "Direction": "Sell",
-                            "Date": timestamp.strftime("%Y-%m-%d %H:%M")
-                        })
+        block_time = parsed.get("blockTime")
+        date_str = datetime.fromtimestamp(block_time).strftime("%Y-%m-%d %H:%M") if block_time else "n/a"
 
-    return token_data
+        instructions = parsed.get("transaction", {}).get("message", {}).get("instructions", [])
+        for ix in instructions:
+            program = ix.get("program")
+            parsed_ix = ix.get("parsed", {})
+            if program == "spl-token" and isinstance(parsed_ix, dict):
+                info = parsed_ix.get("info", {})
+                amount = info.get("amount")
+                source = info.get("source")
+                destination = info.get("destination")
+                mint = info.get("mint")
 
-# Excel генерация
+                result_data.append({
+                    "Token": mint,
+                    "Amount": amount,
+                    "From": source,
+                    "To": destination,
+                    "Date": date_str
+                })
+
+    return result_data
+
+# Генерация Excel
 def generate_excel(wallet, data):
+    from openpyxl import Workbook
     wb = Workbook()
     ws = wb.active
-    ws.title = "Token Activity"
-    ws.append(["Token", "Amount", "Direction", "Date"])
+    ws.title = "Transactions"
+    ws.append(["Token", "Amount", "From", "To", "Date"])
 
     for row in data:
-        ws.append([row["Token"], row["Amount"], row["Direction"], row["Date"]])
+        ws.append([row["Token"], row["Amount"], row["From"], row["To"], row["Date"]])
 
     filename = f"{wallet}_{datetime.now().strftime('%Y%m%d%H%M%S')}.xlsx"
     wb.save(filename)
     return filename
 
-# Обработка адреса
+# Команды Telegram
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
     bot.reply_to(message, "Привет! Отправь мне адрес Solana-кошелька.")
@@ -75,7 +105,6 @@ def handle_wallet(message):
     wallet = message.text.strip()
     if len(wallet) in [32, 44] and wallet.isalnum():
         bot.reply_to(message, "Формирую отчёт...")
-
         data = get_token_transfers(wallet)
         if not data:
             bot.send_message(message.chat.id, "Не удалось получить данные или операций не найдено.")
@@ -88,11 +117,11 @@ def handle_wallet(message):
     else:
         bot.reply_to(message, "Пожалуйста, отправь корректный адрес Solana.")
 
-# Запуск polling и фейкового веб-сервера
+# Фейковый веб-сервер + polling
 threading.Thread(target=bot.polling, daemon=True).start()
 
 PORT = 10000
 Handler = http.server.SimpleHTTPRequestHandler
 with socketserver.TCPServer(("", PORT), Handler) as httpd:
-    print(f"Render порт открыт (PORT {PORT}) — бот запущен.")
+    print(f"Бот запущен и слушает PORT {PORT}")
     httpd.serve_forever()
