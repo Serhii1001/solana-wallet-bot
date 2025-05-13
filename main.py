@@ -22,7 +22,7 @@ def get_transaction_signatures(wallet):
         "method": "getSignaturesForAddress",
         "params": [
             wallet,
-            {"limit": 10}
+            {"limit": 50}
         ]
     }
     response = requests.post(url, headers=headers, data=json.dumps(payload))
