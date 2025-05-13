@@ -14,36 +14,32 @@ HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # Получение транзакций через Helius Enhanced API
-def get_helius_transactions(wallet):
+def get_token_transfers(wallet):
     url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=50"
     response = requests.get(url)
 
-    with open("debug_helius.txt", "w") as f:
+    # Записываем в debug_helius.txt
+    with open("debug_helius.txt", "w", encoding="utf-8") as f:
         f.write("🧪 Helius Response:\n")
         f.write(response.text)
 
     if response.status_code != 200:
         return []
 
-    return response.json()
-
-# Обработка транзакций и формирование данных
-def get_token_transfers(wallet):
-    transactions = get_helius_transactions(wallet)
+    transactions = response.json()
     result_data = []
 
     for tx in transactions:
         timestamp = tx.get("timestamp")
         date_str = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M") if timestamp else "n/a"
-        events = tx.get("events", {})
-        transfers = events.get("tokenTransfers", [])
 
-        for transfer in transfers:
+        token_transfers = tx.get("tokenTransfers", [])
+        for transfer in token_transfers:
             result_data.append({
                 "Token": transfer.get("mint", "Unknown"),
-                "Amount": transfer.get("amount", 0),
-                "From": transfer.get("fromUserAccount", "n/a"),
-                "To": transfer.get("toUserAccount", "n/a"),
+                "Amount": transfer.get("tokenAmount", 0),
+                "From": transfer.get("fromUserAccount", "Unknown"),
+                "To": transfer.get("toUserAccount", "Unknown"),
                 "Date": date_str
             })
 
@@ -75,7 +71,7 @@ def handle_wallet(message):
         bot.reply_to(message, "Формирую отчёт...")
         data = get_token_transfers(wallet)
 
-        # Отправка debug_helius.txt
+        # Отправка debug-файла
         try:
             with open("debug_helius.txt", "rb") as f:
                 bot.send_document(message.chat.id, f)
@@ -93,7 +89,7 @@ def handle_wallet(message):
     else:
         bot.reply_to(message, "Пожалуйста, отправь корректный адрес Solana.")
 
-# Фейковый веб-сервер + polling
+# Запуск Telegram-бота с фейковым веб-сервером для Render
 threading.Thread(target=bot.polling, daemon=True).start()
 
 PORT = 10000
