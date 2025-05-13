@@ -1,14 +1,14 @@
 import telebot
 import os
-
 from openpyxl import Workbook
 from datetime import datetime
 
+# Telegram API
 TOKEN = os.getenv("BOT_TOKEN")
 bot = telebot.TeleBot(TOKEN)
 
+# Генерация Excel-отчёта
 def generate_excel(wallet_address):
-    # Простейший Excel с одной ячейкой
     wb = Workbook()
     ws = wb.active
     ws.title = "Report"
@@ -29,8 +29,19 @@ def handle_address(message):
         file_path = generate_excel(wallet)
         with open(file_path, "rb") as f:
             bot.send_document(message.chat.id, f)
-        os.remove(file_path)  # очищаем после отправки
+        os.remove(file_path)
     else:
-        bot.reply_to(message, "Пожалуйста, отправь корректный адрес Solana (32–44 символа, без пробелов).")
+        bot.reply_to(message, "Пожалуйста, отправь корректный адрес Solana.")
 
-bot.polling()
+# Запуск polling в отдельном потоке
+import threading
+threading.Thread(target=bot.polling, daemon=True).start()
+
+# Фейковый веб-сервер для Render
+import http.server
+import socketserver
+PORT = 10000
+Handler = http.server.SimpleHTTPRequestHandler
+with socketserver.TCPServer(("", PORT), Handler) as httpd:
+    print(f"Render порт открыт (PORT {PORT}) — бот запущен.")
+    httpd.serve_forever()
