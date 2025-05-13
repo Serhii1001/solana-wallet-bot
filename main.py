@@ -48,7 +48,7 @@ def get_token_transfers(wallet):
                 {"encoding": "jsonParsed"}
             ]
         }
-        response = requests.post(url, headers=headers, data=json.dumps(payload))
+    response = requests.post(url, headers=headers, data=json.dumps(payload))
     with open("debug.txt", "a") as debug_file:
     debug_file.write("🧪 Ответ от Solana: " + response.text + "\\n")
 
