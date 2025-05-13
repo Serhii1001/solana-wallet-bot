@@ -26,6 +26,11 @@ def get_transaction_signatures(wallet):
         ]
     }
     response = requests.post(url, headers=headers, data=json.dumps(payload))
+
+    # Запись в debug.txt
+    with open("debug.txt", "a") as debug_file:
+        debug_file.write("🧪 Ответ от Solana: " + response.text + "\n")
+
     if response.status_code != 200:
         return []
 
@@ -48,13 +53,7 @@ def get_token_transfers(wallet):
                 {"encoding": "jsonParsed"}
             ]
         }
-    response = requests.post(url, headers=headers, data=json.dumps(payload))
-    with open("debug.txt", "a") as debug_file:
-    debug_file.write("🧪 Ответ от Solana: " + response.text + "\\n")
-
-    if response.status_code != 200:
-    return []
-
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
         if response.status_code != 200:
             continue
 
@@ -88,7 +87,6 @@ def get_token_transfers(wallet):
 
 # Генерация Excel
 def generate_excel(wallet, data):
-    from openpyxl import Workbook
     wb = Workbook()
     ws = wb.active
     ws.title = "Transactions"
