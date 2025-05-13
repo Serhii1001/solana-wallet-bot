@@ -25,16 +25,22 @@ def get_token_transfers(wallet):
     for tx in txs:
         if tx.get("type") == "SWAP":
             timestamp = datetime.fromtimestamp(tx.get("timestamp", 0))
-            swap_data = tx.get("events", {}).get("swap")
-            if swap_data:
-                for event in swap_data.get("nativeInput", []):
+            events = tx.get("events", {})
+            swap_data = events.get("swap")
+
+            if isinstance(swap_data, dict):
+                native_input = swap_data.get("nativeInput") or []
+                native_output = swap_data.get("nativeOutput") or []
+
+                for event in native_input:
                     token_data.append({
                         "Token": event.get("mint", "Unknown"),
                         "Amount": event.get("amount", 0),
                         "Direction": "Buy",
                         "Date": timestamp.strftime("%Y-%m-%d %H:%M")
                     })
-                for event in swap_data.get("nativeOutput", []):
+
+                for event in native_output:
                     token_data.append({
                         "Token": event.get("mint", "Unknown"),
                         "Amount": event.get("amount", 0),
@@ -43,6 +49,7 @@ def get_token_transfers(wallet):
                     })
 
     return token_data
+
 
 
 # Excel генерация
