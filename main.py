@@ -110,6 +110,14 @@ def handle_wallet(message):
     if len(wallet) in [32, 44] and wallet.isalnum():
         bot.reply_to(message, "Формирую отчёт...")
         data = get_token_transfers(wallet)
+
+        # Отправка debug.txt
+        try:
+            with open("debug.txt", "rb") as f:
+                bot.send_document(message.chat.id, f)
+        except:
+            bot.send_message(message.chat.id, "⚠️ Не удалось отправить отладочный лог.")
+
         if not data:
             bot.send_message(message.chat.id, "Не удалось получить данные или операций не найдено.")
             return
