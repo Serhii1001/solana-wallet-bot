@@ -1,7 +1,7 @@
 import telebot
 import os
 
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("7702602443:AAEZbG6I6jH_QtoIwdyO_YFywTnEBQmpxlU")
 bot = telebot.TeleBot(TOKEN)
 
 @bot.message_handler(commands=['start'])
