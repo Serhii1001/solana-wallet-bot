@@ -14,7 +14,7 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # Получение транзакций от Helius
 def get_token_transfers(wallet):
-    url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100"
+    url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100&parsedTransactionHistory=true"
     response = requests.get(url)
     if response.status_code != 200:
         return []
@@ -50,7 +50,6 @@ def get_token_transfers(wallet):
                         })
 
     return token_data
-
 
 # Excel генерация
 def generate_excel(wallet, data):
