@@ -10,81 +10,42 @@ import http.server
 import socketserver
 
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
+HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# Получение списка транзакций по адресу
-def get_transaction_signatures(wallet):
-    url = "https://api.mainnet-beta.solana.com"
-    headers = {"Content-Type": "application/json"}
-    payload = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "getSignaturesForAddress",
-        "params": [
-            wallet,
-            {"limit": 50}
-        ]
-    }
-    response = requests.post(url, headers=headers, data=json.dumps(payload))
+# Получение транзакций через Helius Enhanced API
+def get_helius_transactions(wallet):
+    url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=50"
+    response = requests.get(url)
 
-    # Запись в debug.txt
-    with open("debug.txt", "a") as debug_file:
-        debug_file.write("🧪 Ответ от Solana: " + response.text + "\n")
+    with open("debug_helius.txt", "w") as f:
+        f.write("🧪 Helius Response:\n")
+        f.write(response.text)
 
     if response.status_code != 200:
         return []
 
-    return [tx["signature"] for tx in response.json().get("result", [])]
+    return response.json()
 
-# Получение и разбор транзакции
+# Обработка транзакций и формирование данных
 def get_token_transfers(wallet):
-    signatures = get_transaction_signatures(wallet)
-    url = "https://api.mainnet-beta.solana.com"
-    headers = {"Content-Type": "application/json"}
+    transactions = get_helius_transactions(wallet)
     result_data = []
 
-    with open("debug_parsed.txt", "w") as log_file:
-        for sig in signatures:
-            payload = {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "getParsedTransaction",
-                "params": [
-                    sig,
-                    {"encoding": "jsonParsed"}
-                ]
-            }
-            response = requests.post(url, headers=headers, data=json.dumps(payload))
-            if response.status_code != 200:
-                continue
+    for tx in transactions:
+        timestamp = tx.get("timestamp")
+        date_str = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M") if timestamp else "n/a"
+        events = tx.get("events", {})
+        transfers = events.get("tokenTransfers", [])
 
-            parsed = response.json().get("result")
-            log_file.write(f"🔹 Parsed for {sig}: {json.dumps(parsed, indent=2)}\n\n")
-
-            if not parsed:
-                continue
-
-            block_time = parsed.get("blockTime")
-            date_str = datetime.fromtimestamp(block_time).strftime("%Y-%m-%d %H:%M") if block_time else "n/a"
-
-            instructions = parsed.get("transaction", {}).get("message", {}).get("instructions", [])
-            for ix in instructions:
-                program = ix.get("program")
-                parsed_ix = ix.get("parsed", {})
-                if program == "spl-token" and isinstance(parsed_ix, dict):
-                    info = parsed_ix.get("info", {})
-                    amount = info.get("amount")
-                    source = info.get("source")
-                    destination = info.get("destination")
-                    mint = info.get("mint")
-
-                    result_data.append({
-                        "Token": mint,
-                        "Amount": amount,
-                        "From": source,
-                        "To": destination,
-                        "Date": date_str
-                    })
+        for transfer in transfers:
+            result_data.append({
+                "Token": transfer.get("mint", "Unknown"),
+                "Amount": transfer.get("amount", 0),
+                "From": transfer.get("fromUserAccount", "n/a"),
+                "To": transfer.get("toUserAccount", "n/a"),
+                "Date": date_str
+            })
 
     return result_data
 
@@ -114,19 +75,12 @@ def handle_wallet(message):
         bot.reply_to(message, "Формирую отчёт...")
         data = get_token_transfers(wallet)
 
-        # Отправка debug.txt
+        # Отправка debug_helius.txt
         try:
-            with open("debug.txt", "rb") as f:
+            with open("debug_helius.txt", "rb") as f:
                 bot.send_document(message.chat.id, f)
         except:
-            bot.send_message(message.chat.id, "⚠️ Не удалось отправить debug.txt")
-
-        # Отправка debug_parsed.txt
-        try:
-            with open("debug_parsed.txt", "rb") as f:
-                bot.send_document(message.chat.id, f)
-        except:
-            bot.send_message(message.chat.id, "⚠️ Не удалось отправить debug_parsed.txt")
+            bot.send_message(message.chat.id, "⚠️ Не удалось отправить debug_helius.txt")
 
         if not data:
             bot.send_message(message.chat.id, "Не удалось получить данные или операций не найдено.")
