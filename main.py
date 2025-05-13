@@ -23,24 +23,27 @@ def get_token_transfers(wallet):
     token_data = []
 
     for tx in txs:
-        if 'type' in tx and tx['type'] == "SWAP":
-            timestamp = datetime.fromtimestamp(tx['timestamp'])
-            for event in tx.get("events", {}).get("swap", {}).get("nativeInput", []):
-                token_data.append({
-                    "Token": event.get("mint", "Unknown"),
-                    "Amount": event.get("amount", 0),
-                    "Direction": "Buy",
-                    "Date": timestamp.strftime("%Y-%m-%d %H:%M")
-                })
-            for event in tx.get("events", {}).get("swap", {}).get("nativeOutput", []):
-                token_data.append({
-                    "Token": event.get("mint", "Unknown"),
-                    "Amount": event.get("amount", 0),
-                    "Direction": "Sell",
-                    "Date": timestamp.strftime("%Y-%m-%d %H:%M")
-                })
+        if tx.get("type") == "SWAP":
+            timestamp = datetime.fromtimestamp(tx.get("timestamp", 0))
+            swap_data = tx.get("events", {}).get("swap")
+            if swap_data:
+                for event in swap_data.get("nativeInput", []):
+                    token_data.append({
+                        "Token": event.get("mint", "Unknown"),
+                        "Amount": event.get("amount", 0),
+                        "Direction": "Buy",
+                        "Date": timestamp.strftime("%Y-%m-%d %H:%M")
+                    })
+                for event in swap_data.get("nativeOutput", []):
+                    token_data.append({
+                        "Token": event.get("mint", "Unknown"),
+                        "Amount": event.get("amount", 0),
+                        "Direction": "Sell",
+                        "Date": timestamp.strftime("%Y-%m-%d %H:%M")
+                    })
 
     return token_data
+
 
 # Excel генерация
 def generate_excel(wallet, data):
