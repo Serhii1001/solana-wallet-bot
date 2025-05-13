@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: solana-wallet-bot
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python main.py"
+    envVars:
+      - key: BOT_TOKEN
+        value: 7702602443:AAEZbG6I6jH_QtoIwdyO_YFywTnEBQmpxlU
