@@ -43,45 +43,48 @@ def get_token_transfers(wallet):
     headers = {"Content-Type": "application/json"}
     result_data = []
 
-    for sig in signatures:
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "getParsedTransaction",
-            "params": [
-                sig,
-                {"encoding": "jsonParsed"}
-            ]
-        }
-        response = requests.post(url, headers=headers, data=json.dumps(payload))
-        if response.status_code != 200:
-            continue
+    with open("debug_parsed.txt", "w") as log_file:
+        for sig in signatures:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getParsedTransaction",
+                "params": [
+                    sig,
+                    {"encoding": "jsonParsed"}
+                ]
+            }
+            response = requests.post(url, headers=headers, data=json.dumps(payload))
+            if response.status_code != 200:
+                continue
 
-        parsed = response.json().get("result")
-        if not parsed:
-            continue
+            parsed = response.json().get("result")
+            log_file.write(f"🔹 Parsed for {sig}: {json.dumps(parsed, indent=2)}\n\n")
 
-        block_time = parsed.get("blockTime")
-        date_str = datetime.fromtimestamp(block_time).strftime("%Y-%m-%d %H:%M") if block_time else "n/a"
+            if not parsed:
+                continue
 
-        instructions = parsed.get("transaction", {}).get("message", {}).get("instructions", [])
-        for ix in instructions:
-            program = ix.get("program")
-            parsed_ix = ix.get("parsed", {})
-            if program == "spl-token" and isinstance(parsed_ix, dict):
-                info = parsed_ix.get("info", {})
-                amount = info.get("amount")
-                source = info.get("source")
-                destination = info.get("destination")
-                mint = info.get("mint")
+            block_time = parsed.get("blockTime")
+            date_str = datetime.fromtimestamp(block_time).strftime("%Y-%m-%d %H:%M") if block_time else "n/a"
 
-                result_data.append({
-                    "Token": mint,
-                    "Amount": amount,
-                    "From": source,
-                    "To": destination,
-                    "Date": date_str
-                })
+            instructions = parsed.get("transaction", {}).get("message", {}).get("instructions", [])
+            for ix in instructions:
+                program = ix.get("program")
+                parsed_ix = ix.get("parsed", {})
+                if program == "spl-token" and isinstance(parsed_ix, dict):
+                    info = parsed_ix.get("info", {})
+                    amount = info.get("amount")
+                    source = info.get("source")
+                    destination = info.get("destination")
+                    mint = info.get("mint")
+
+                    result_data.append({
+                        "Token": mint,
+                        "Amount": amount,
+                        "From": source,
+                        "To": destination,
+                        "Date": date_str
+                    })
 
     return result_data
 
@@ -116,7 +119,14 @@ def handle_wallet(message):
             with open("debug.txt", "rb") as f:
                 bot.send_document(message.chat.id, f)
         except:
-            bot.send_message(message.chat.id, "⚠️ Не удалось отправить отладочный лог.")
+            bot.send_message(message.chat.id, "⚠️ Не удалось отправить debug.txt")
+
+        # Отправка debug_parsed.txt
+        try:
+            with open("debug_parsed.txt", "rb") as f:
+                bot.send_document(message.chat.id, f)
+        except:
+            bot.send_message(message.chat.id, "⚠️ Не удалось отправить debug_parsed.txt")
 
         if not data:
             bot.send_message(message.chat.id, "Не удалось получить данные или операций не найдено.")
