@@ -49,6 +49,7 @@ def get_token_transfers(wallet):
             ]
         }
         response = requests.post(url, headers=headers, data=json.dumps(payload))
+        print("🧪 Ответ от Solana:", response.text) 
         if response.status_code != 200:
             continue
 
