@@ -15,6 +15,10 @@ COINGECKO_PRICE_URL = "https://api.coingecko.com/api/v3/simple/price"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
+# Ensure Helius API key is configured
+if not HELIUS_API_KEY:
+    raise RuntimeError("HELIUS_API_KEY env var not set. Please configure your Helius API key.")
+
 # ---------------- Helper Functions ----------------
 def safe_request(url, params=None, retries=3):
     for _ in range(retries):
