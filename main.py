@@ -49,22 +49,12 @@ def get_historical_mcap(mint, ts_dt):
     points = data.get('chart', [])
     if not points:
         return 0
-    # Целевой timestamp в мс
-    target = int(ts_dt.timestamp() * 1000)
-    # Ищем ближайшую точку по времени
-    best = min(points, key=lambda p: abs(p.get('timestamp', 0) - target))
-    return best.get('marketCap', 0)(mint, ts_dt):
-    url = f"{DEXSCREENER_BASE}{mint}/chart?interval=1d"
-    data = safe_request(url)
-    points = data.get('chart', [])
-    if not points:
-        return 0
     target = int(ts_dt.timestamp() * 1000)
     best = min(points, key=lambda p: abs(p.get('timestamp', 0) - target))
     return best.get('marketCap', 0)
 
 
-def get_current_mcap(mint):
+def get_current_mcap(mint):(mint):
     data = safe_request(DEXSCREENER_BASE + mint)
     return data.get('stats', {}).get('marketCap', 0)
 
