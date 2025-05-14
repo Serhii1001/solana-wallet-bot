@@ -30,23 +30,17 @@ def get_sol_balance(wallet):
     return lamports / 1e9
 
 def get_transactions(wallet, since_days):
-    url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100"
+    url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=1000"
     response = requests.get(url)
     if response.status_code != 200:
         return []
     data = response.json()
     cutoff = datetime.utcnow() - timedelta(days=since_days)
-    filtered = [tx for tx in data if tx.get("timestamp") and datetime.utcfromtimestamp(tx["timestamp"]) >= cutoff]
-    return filtered
+    return [tx for tx in data if tx.get("timestamp") and datetime.utcfromtimestamp(tx["timestamp"]) >= cutoff]
 
 def analyze_wallet(wallet, since_days):
     txs = get_transactions(wallet, since_days)
     tokens = {}
-    total_profit = 0
-    total_loss = 0
-    wins = 0
-    losses = 0
-
     for tx in txs:
         ts = tx.get("timestamp")
         events = tx.get("events", {})
@@ -58,8 +52,8 @@ def analyze_wallet(wallet, since_days):
             mint = tr.get("mint")
             from_acc = tr.get("fromUserAccount")
             to_acc = tr.get("toUserAccount")
-            direction = "buy" if to_acc == wallet else "sell" if from_acc == wallet else "other"
-            if direction == "other":
+            direction = "buy" if to_acc == wallet else "sell" if from_acc == wallet else None
+            if not direction:
                 continue
 
             if mint not in tokens:
@@ -93,15 +87,18 @@ def analyze_wallet(wallet, since_days):
                 if not t["sell_ts"]:
                     t["sell_ts"] = ts
 
+    winrate = 0
+    win = 0
+    loss = 0
     for t in tokens.values():
         if t["earned"] > t["spent"]:
-            wins += 1
+            win += 1
         elif t["earned"] < t["spent"]:
-            losses += 1
+            loss += 1
+    winrate = round(100 * win / (win + loss), 2) if (win + loss) > 0 else 0
 
-    winrate = round(100 * wins / (wins + losses), 2) if wins + losses else 0
-    balance = get_sol_balance(wallet)
     pnl = round(sum(t["earned"] - t["spent"] for t in tokens.values()), 4)
+    balance = get_sol_balance(wallet)
 
     return tokens, {
         "wallet": wallet,
