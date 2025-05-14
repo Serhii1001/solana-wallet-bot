@@ -41,8 +41,7 @@ def get_symbol(mint):
 
 def get_historical_mcap(mint, ts_dt):
     """
-    Получение исторической MCAP токена из Dexscreener chart API близко к заданному времени.
-    Используем интервал 1 час для более точного соответствия.
+    Historical MCAP from Dexscreener chart (1h interval) closest to ts_dt
     """
     url = f"{DEXSCREENER_BASE}{mint}/chart?interval=1h"
     data = safe_request(url)
@@ -55,7 +54,6 @@ def get_historical_mcap(mint, ts_dt):
 
 
 def get_current_mcap(mint):
-    """Получение текущей MCAP токена из Dexscreener API"""
     data = safe_request(DEXSCREENER_BASE + mint)
     return data.get('stats', {}).get('marketCap', 0)
 
@@ -64,8 +62,7 @@ def get_transactions(wallet, limit=500):
     txs = []
     before = None
     while len(txs) < limit:
-        url = (f"https://api.helius.xyz/v0/addresses/{wallet}/transactions"
-               f"?api-key={HELIUS_API_KEY}&limit=100")
+        url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100"
         if before:
             url += f"&before={before}"
         batch = safe_request(url)
@@ -97,9 +94,7 @@ def analyze_wallet(wallet):
         fee = tx.get('fee', 0)/1e9
         for tr in tx.get('tokenTransfers', []):
             mint = tr['mint']
-            direction = ('buy' if tr.get('toUserAccount') == wallet
-                         else 'sell' if tr.get('fromUserAccount') == wallet
-                         else None)
+            direction = ('buy' if tr.get('toUserAccount') == wallet else 'sell' if tr.get('fromUserAccount') == wallet else None)
             if not direction:
                 continue
             rec = tokens.setdefault(mint, {
@@ -111,34 +106,32 @@ def analyze_wallet(wallet):
                 'sells': 0,
                 'first_ts': None,
                 'last_ts': None,
-                'first_price': 0.0,
-                'last_price': 0.0,
                 'fee': 0.0
             })
-            amount = tr.get('tokenAmount', 0)/10**tr.get('decimals', 0)
+            amount = tr.get('tokenAmount', 0) / 10**tr.get('decimals', 0)
             if direction == 'buy':
                 rec['buys'] += 1
                 rec['spent'] += spent
                 rec['fee'] += fee
                 if rec['first_ts'] is None:
                     rec['first_ts'] = ts_dt
-                    rec['first_price'] = round(spent/amount, 6) if amount else 0.0
             else:
                 rec['sells'] += 1
                 rec['earned'] += earned
                 rec['fee'] += fee
                 rec['last_ts'] = ts_dt
-                rec['last_price'] = round(earned/amount, 6) if amount else 0.0
+    # summary
     total_spent = total_earned = 0.0
     wins = losses = 0
     profit_percents = []
     for rec in tokens.values():
         s, e = rec['spent'], rec['earned']
         delta = round(e - s, 4)
-        pct = round(delta/s*100, 2) if s else 0.0
+        pct = round(delta / s * 100, 2) if s else 0.0
         rec['delta'] = delta
         rec['pct'] = pct
         rec['last_trade'] = rec['last_ts'] or rec['first_ts']
+        # MCAPs
         rec['mcap_in'] = get_historical_mcap(rec['mint'], rec['first_ts']) if rec['first_ts'] else 0
         rec['mcap_out'] = get_historical_mcap(rec['mint'], rec['last_ts']) if rec['last_ts'] else 0
         rec['mcap_cur'] = get_current_mcap(rec['mint'])
@@ -153,7 +146,7 @@ def analyze_wallet(wallet):
     avgwin = round(sum(profit_percents)/len(profit_percents), 2) if profit_percents else 0.0
     pnl = round(total_earned - total_spent, 4)
     balance = get_balance(wallet)
-    balchg = round(pnl/(balance-pnl)*100, 2) if balance and pnl else 0.0
+    balchg = round(pnl / (balance - pnl) * 100, 2) if balance and pnl else 0.0
     summary = {
         'wallet': wallet,
         'winrate': f"{winrate}%",
@@ -172,29 +165,32 @@ def analyze_wallet(wallet):
 def generate_excel(tokens, summary):
     wb = Workbook()
     ws = wb.active
-    # Metadata
+    # metadata
     meta_h = ['Wallet', '', '', '', 'WinRate', 'PnL R', '', 'Avg Win %', 'PnL Loss', 'Balance change', '', 'TimePeriod', 'SOL Price Now', 'Balance']
     meta_v = [summary['wallet'], '', '', '', summary['winrate'], summary['pnl'], '', summary['avgwin'], summary['pnlloss'], summary['balchg'], '', summary['period'], summary['solprice'], summary['balance']]
     ws.append(meta_h)
     ws.append(meta_v)
-    # Classification
+    # classification
     ws.append(['']*len(meta_h))
     ws.append(['Tokens entry MCAP:'])
     ws.append(['<5k', '5k-30k', '30k-100k', '100k-300k', '300k+'])
     ws.append(['']*len(meta_h))
     ws.append(['']*len(meta_h))
-    # Table header
-    hdr = ['Token', 'Spent SOL', 'Earned SOL', 'Delta Sol', 'Delta %', 'Buys', 'Sells', 'Last trade', 'Income', 'Outcome', 'Fee', 'Period', 'First buy Mcap', 'Last tx Mcap', 'Current Mcap', 'Contract', 'Dexscreener', 'Photon']
+    # table header
+    hdr = ['Token','Spent SOL','Earned SOL','Delta Sol','Delta %','Buys','Sells','Last trade','Income','Outcome','Fee','Period','First buy Mcap','Last tx Mcap','Current Mcap','Contract','Dexscreener','Photon']
     ws.append(hdr)
     for col in range(1, len(hdr)+1):
         cell = ws.cell(row=ws.max_row, column=col)
         cell.font = Font(bold=True)
         cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-    # Data rows
+    # data rows
     for rec in tokens.values():
         date = rec['last_trade'].strftime('%d.%m.%Y') if rec['last_trade'] else '-'
+        # fee as total
+        fee = round(rec['fee'],5)
+        # period
         if rec['first_ts'] and rec['last_ts']:
-            secs = int((rec['last_ts'] - rec['first_ts']).total_seconds())
+            secs = int((rec['last_ts']-rec['first_ts']).total_seconds())
             mins, sec = divmod(secs, 60)
             hrs, mins = divmod(mins, 60)
             if hrs:
@@ -210,9 +206,22 @@ def generate_excel(tokens, summary):
             f"{round(rec['spent'],2)} SOL", f"{round(rec['earned'],2)} SOL",
             f"{rec['delta']} SOL", f"{rec['pct']}%",
             rec['buys'], rec['sells'], date,
-            rec['mcap_in'], rec['mcap_out'], round(rec['fee'],5), period,
+            rec['mcap_in'], rec['mcap_out'], fee, period,
             rec['mcap_in'], rec['mcap_out'], rec['mcap_cur'],
             f"https://solscan.io/token/{rec['mint']}",
             f"=HYPERLINK(\"https://dexscreener.com/solana/token/{rec['mint']}\", \"View trades\")",
             f"=HYPERLINK(\"https://photon.tools/token/{rec['mint']}\", \"View trades\")"
         ]
+        ws.append(row)
+        color = 'C6EFCE' if rec['delta']>0 else 'FFC7CE'
+        for c in (4,5):
+            ws.cell(row=ws.max_row, column=c).fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+    # save file
+    fname = f"report_{summary['wallet']}_{datetime.now().strftime('%Y%m%d%H%M%S')}.xlsx"
+    wb.save(fname)
+    return fname
+
+# === Bot Handlers ===
+
+@bot.message_handler(commands=['start'])
+
