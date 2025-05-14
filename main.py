@@ -4,6 +4,7 @@ import telebot
 from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
+from openpyxl.utils import get_column_letter
 
 # ---------------- Configuration ----------------
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
@@ -40,7 +41,6 @@ def fetch_all_txs(wallet, limit=500, period_cutoff_ts=None):
         if cursor:
             params["cursor"] = cursor
         resp = safe_request(url_base, params)
-        # API may return list directly or under 'transactions'
         txs = resp.get("transactions", resp)
         if not txs:
             break
@@ -115,12 +115,9 @@ def format_duration(start, end):
 
 # ---------------- Analysis ----------------
 def analyze_wallet(wallet, period_days=30):
-    # cutoff timestamp for filtering
     cutoff = datetime.utcnow().timestamp() - period_days * 86400
-    # fetch all recent transactions
     txs = fetch_all_txs(wallet, limit=500, period_cutoff_ts=cutoff)
 
-    # fetch balance
     bal = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/balances?api-key={HELIUS_API_KEY}")
     balance = bal.get('nativeBalance', 0) / 1e9
 
@@ -129,7 +126,6 @@ def analyze_wallet(wallet, period_days=30):
         ts = tx.get('timestamp', 0)
         dt = datetime.fromtimestamp(ts)
         fee = tx.get('fee', 0) / 1e9
-        # calculate native transfers per tx
         native_transfers = tx.get('nativeTransfers', [])
         spent_native = sum(n.get('amount', 0) / 1e9 for n in native_transfers if n.get('fromUserAccount') == wallet)
         earned_native = sum(n.get('amount', 0) / 1e9 for n in native_transfers if n.get('toUserAccount') == wallet)
@@ -137,7 +133,6 @@ def analyze_wallet(wallet, period_days=30):
         for tr in tx.get('tokenTransfers', []):
             mint = tr.get('mint')
             amount = float(tr.get('tokenAmount', 0)) / (10 ** tr.get('decimals', 0))
-            # determine direction of token transfer
             if tr.get('toUserAccount') == wallet:
                 direction = 'buy'
             elif tr.get('fromUserAccount') == wallet:
@@ -170,7 +165,6 @@ def analyze_wallet(wallet, period_days=30):
                 rec['last_ts'] = dt
                 rec['last_mcap'] = get_historical_mcap(mint, ts * 1000)
 
-    # finalize metrics for each token
     for rec in records.values():
         rec['delta'] = rec['earned'] - rec['spent']
         rec['delta_pct'] = (rec['delta'] / rec['spent'] * 100) if rec['spent'] else 0
@@ -178,7 +172,6 @@ def analyze_wallet(wallet, period_days=30):
         rec['last_trade'] = rec['last_ts'] or rec['first_ts']
         rec['current_mcap'] = get_current_mcap(rec['mint'])
 
-    # summary metrics
     total_spent = sum(r['spent'] for r in records.values())
     total_earned = sum(r['earned'] for r in records.values())
     pnl = total_earned - total_spent
@@ -211,7 +204,6 @@ def generate_excel(wallet, records, summary):
     bold = Font(bold=True)
     center = Alignment(horizontal='center', vertical='center')
 
-    # Header summary
     ws.merge_cells('A1:D1'); ws['A1'] = 'Wallet'; ws['A1'].font = bold
     ws.merge_cells('A2:D2'); ws['A2'] = summary['wallet']
     ws.merge_cells('E1:F1'); ws['E1'] = 'TimePeriod'; ws['E1'].font = bold
@@ -221,7 +213,6 @@ def generate_excel(wallet, records, summary):
     ws.merge_cells('I1:J1'); ws['I1'] = 'Balance'; ws['I1'].font = bold
     ws.merge_cells('I2:J2'); ws['I2'] = format_sol(summary['balance'])
 
-    # Metrics
     metrics = [
         ('WinRate', format_pct(summary['winrate'])),
         ('PnL R', format_sol(summary['pnl'])),
@@ -229,103 +220,40 @@ def generate_excel(wallet, records, summary):
         ('Avg Win %', format_pct(summary['avg_win_pct'])),
         ('Balance change', format_pct(summary['balance_change']))
     ]
-    col = 11  # column K
+    col = 11
     for name, value in metrics:
-        cell_label = ws.cell(row=1, column=col)
-        cell_label.value = name; cell_label.font = bold
-        cell_value = ws.cell(row=2, column=col)
-        cell_value.value = value
+        ws.cell(row=1, column=col, value=name).font = bold
+        ws.cell(row=2, column=col, value=value)
         col += 2
 
-    # Empty rows
     ws.append([])
     ws.append([])
 
-    # MCAP distribution header
     ws['A5'] = '<5k'; ws['B5'] = '5k-30k'; ws['C5'] = '30k-100k'; ws['D5'] = '100k-300k'; ws['E5'] = '300k+'
     for cell in ws['A5:E5'][0]: cell.font = bold
     ws.append([])
 
-    # Table header
     headers = [
         'Token','Spent SOL','Earned SOL','Delta SOL','Delta %',
         'Buys','Sells','Last trade','Income','Outcome','Fee','Period',
         'First buy Mcap','Last tx Mcap','Current Mcap','Contract','Dexscreener','Photon'
     ]
     ws.append(headers)
-    for col_idx, _ in enumerate(headers, start=1):
-        cell = ws.cell(row=8, column=col_idx)
-        cell.font = bold
-        cell.alignment = center
+    for idx in range(1, len(headers)+1):
+        ws.cell(row=8, column=idx).font = bold
+        ws.cell(row=8, column=idx).alignment = center
 
-    # Sort by last_trade desc
     sorted_records = sorted(records.values(), key=lambda r: r['last_trade'] or datetime.min, reverse=True)
     row = 9
     for rec in sorted_records:
-        fields = [rec['symbol'], rec['spent'], rec['earned'], rec['delta'], rec['delta_pct'],
-                  rec['buys'], rec['sells'],
-                  rec['last_trade'].strftime('%d.%m.%Y') if rec['last_trade'] else '-',
-                  rec['income'], rec['outcome'], rec['fee'], rec['period'],
-                  rec['first_mcap'] or 'N/A', rec['last_mcap'] or 'N/A', rec['current_mcap'] or 'N/A', rec['mint']]
+        fields = [
+            rec['symbol'], rec['spent'], rec['earned'], rec['delta'], rec['delta_pct'],
+            rec['buys'], rec['sells'],
+            rec['last_trade'].strftime('%d.%m.%Y') if rec['last_trade'] else '-',
+            rec['income'], rec['outcome'], rec['fee'], rec['period'],
+            rec['first_mcap'] or 'N/A', rec['last_mcap'] or 'N/A', rec['current_mcap'] or 'N/A',
+            rec['mint']
+        ]
         for col_idx, val in enumerate(fields, start=1):
             cell = ws.cell(row=row, column=col_idx)
             if col_idx == 2:
-                cell.value = f"{val:.2f}"
-            elif col_idx == 3:
-                cell.value = f"{val:.2f}"
-            elif col_idx == 4:
-                cell.value = format_sol(val)
-            elif col_idx == 5:
-                cell.value = format_pct(val)
-            elif col_idx in (6, 7):
-                cell.value = val
-            elif col_idx == 8:
-                cell.value = val
-            elif col_idx in (9, 10):
-                cell.value = f"{val:.6f}"
-            elif col_idx == 11:
-                cell.value = f"{val:.5f}"
-            else:
-                cell.value = val
-        # Hyperlinks
-        ws.cell(row=row, column=17, value='View trades').hyperlink = f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}"
-        ws.cell(row=row, column=18, value='View trades').hyperlink = f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"
-        row += 1
-
-    # Adjust column widths
-    for col in ws.columns:
-        max_length = 0
-        col_letter = col[0].column_letter
-        for cell in col:
-            try:
-                length = len(str(cell.value))
-                if length > max_length:
-                    max_length = length
-            except:
-                pass
-        ws.column_dimensions[col_letter].width = max_length + 2
-
-    # Save
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    filename = f"{wallet}_report_{timestamp}.xlsx"
-    wb.save(filename)
-    return filename
-
-# ---------------- Bot Handlers ----------------
-@bot.message_handler(commands=['start'])
-def cmd_start(message):
-    bot.reply_to(message, 'Привет! Отправь мне Solana-адрес для анализа.')
-
-@bot.message_handler(func=lambda m: True)
-def handle_wallet(message):
-    wallet = message.text.strip()
-    msg = bot.reply_to(message, 'Обрабатываю ваш запрос...')
-    records, summary = analyze_wallet(wallet)
-    fname = generate_excel(wallet, records, summary)
-    with open(fname, 'rb') as f:
-        bot.send_document(message.chat.id, f)
-    bot.edit_message_text('Готово! Смотрите отчёт ниже.', chat_id=message.chat.id, message_id=msg.message_id)
-
-if __name__ == '__main__':
-    bot.remove_webhook()
-    bot.infinity_polling()
