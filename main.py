@@ -12,9 +12,26 @@ import socketserver
 
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
 HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
-SOL_PRICE = 239  # вручную установленный курс SOL
+SOL_PRICE = 239
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+def format_duration(start_ts, end_ts):
+    if not start_ts or not end_ts:
+        return "-"
+    delta = abs(end_ts - start_ts)
+    minutes, seconds = divmod(delta, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+
+    if days:
+        return f"{days}d {hours}h {minutes}m"
+    elif hours:
+        return f"{hours}h {minutes}m"
+    elif minutes:
+        return f"{minutes}m {seconds}s"
+    else:
+        return f"{seconds}s"
 
 def get_transactions(wallet):
     url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100"
@@ -35,7 +52,6 @@ def analyze_wallet(wallet):
 
     for tx in txs:
         timestamp = tx.get("timestamp")
-        date_str = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M") if timestamp else "n/a"
         transfers = tx.get("tokenTransfers", [])
         for tr in transfers:
             mint = tr.get("mint")
@@ -53,19 +69,26 @@ def analyze_wallet(wallet):
                     "sell_count": 0,
                     "buy_amount": 0,
                     "sell_amount": 0,
-                    "first_buy": date_str,
+                    "buy_ts": None,
+                    "sell_ts": None,
                     "profit": 0,
+                    "duration": "-"
                 }
 
             t = tokens[mint]
             if direction == "buy":
                 t["buy_count"] += 1
                 t["buy_amount"] += amount
-                t["first_buy"] = date_str
+                if not t["buy_ts"]:
+                    t["buy_ts"] = timestamp
             else:
                 t["sell_count"] += 1
                 t["sell_amount"] += amount
+                if not t["sell_ts"]:
+                    t["sell_ts"] = timestamp
                 t["profit"] = t["sell_amount"] - t["buy_amount"]
+                if t["buy_ts"] and t["sell_ts"]:
+                    t["duration"] = format_duration(t["buy_ts"], t["sell_ts"])
 
     for t in tokens.values():
         if t["profit"] > 0:
@@ -76,7 +99,7 @@ def analyze_wallet(wallet):
             losses += 1
 
     winrate = round(100 * wins / (wins + losses), 2) if wins + losses > 0 else 0
-    balance = sum([t["sell_amount"] for t in tokens.values()])  # можно улучшить
+    balance = sum([t["sell_amount"] for t in tokens.values()])
 
     return tokens, {
         "wallet": wallet,
@@ -113,7 +136,7 @@ def generate_excel(wallet, tokens, summary):
     start_row = len(meta) + 2
     headers = [
         "Token", "Buy Count", "Sell Count", "Buy Amount", "Sell Amount",
-        "First Buy Date", "Profit (SOL)", "Profit (%)", "Solscan", "Birdeye"
+        "Profit (SOL)", "Profit (%)", "Time in Trade", "Solscan", "Birdeye"
     ]
     ws.append(headers)
     for col in ws.iter_cols(min_row=start_row, max_row=start_row, min_col=1, max_col=len(headers)):
@@ -126,14 +149,14 @@ def generate_excel(wallet, tokens, summary):
         row = [
             t["mint"], t["buy_count"], t["sell_count"],
             round(t["buy_amount"], 4), round(t["sell_amount"], 4),
-            t["first_buy"], round(t["profit"], 4), profit_pct,
+            round(t["profit"], 4), profit_pct, t["duration"],
             f"https://solscan.io/token/{t['mint']}",
             f"https://birdeye.so/token/{t['mint']}"
         ]
         ws.append(row)
 
-        profit_cell = ws[f"G{ws.max_row}"]
-        profit_pct_cell = ws[f"H{ws.max_row}"]
+        profit_cell = ws[f"F{ws.max_row}"]
+        profit_pct_cell = ws[f"G{ws.max_row}"]
         if t["profit"] > 0:
             profit_cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
             profit_pct_cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
@@ -168,7 +191,7 @@ def process_wallet(message):
     else:
         bot.reply_to(message, "Пожалуйста, отправь корректный Solana-адрес.")
 
-bot.remove_webhook()  # Удаляет конфликтующий webhook
+bot.remove_webhook()
 threading.Thread(target=bot.polling, daemon=True).start()
 PORT = 10000
 Handler = http.server.SimpleHTTPRequestHandler
