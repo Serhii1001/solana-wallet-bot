@@ -40,6 +40,20 @@ def get_symbol(mint):
 
 
 def get_historical_mcap(mint, ts_dt):
+    """
+    Получение исторической MCAP токена из Dexscreener chart API близко к заданному времени.
+    Используем интервал 1 час для более точного соответствия.
+    """
+    url = f"{DEXSCREENER_BASE}{mint}/chart?interval=1h"
+    data = safe_request(url)
+    points = data.get('chart', [])
+    if not points:
+        return 0
+    # Целевой timestamp в мс
+    target = int(ts_dt.timestamp() * 1000)
+    # Ищем ближайшую точку по времени
+    best = min(points, key=lambda p: abs(p.get('timestamp', 0) - target))
+    return best.get('marketCap', 0)(mint, ts_dt):
     url = f"{DEXSCREENER_BASE}{mint}/chart?interval=1d"
     data = safe_request(url)
     points = data.get('chart', [])
