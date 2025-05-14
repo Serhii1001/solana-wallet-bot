@@ -212,5 +212,10 @@ def handle(m):
     os.remove(path)
 
 # Run bot with skipping pending updates to avoid getUpdates conflict
+# Run bot clearing any pending updates to avoid conflicts
 if __name__ == "__main__":
-    bot.infinity_polling(skip_pending=True)
+    # Fully reset webhook and pending updates
+    bot.remove_webhook()
+    bot.delete_webhook(drop_pending_updates=True)
+    # Start polling, dropping any pending updates
+    bot.infinity_polling(drop_pending_updates=True)
