@@ -75,14 +75,11 @@ def analyze_wallet(wallet):
             if direction == "other":
                 continue
 
-            amount_sol = 0
+            native_amount = None
             if direction == "buy":
-                amount_sol = float(swap.get("nativeInputAmount", 0)) / 1e9
+                native_amount = swap.get("nativeInputAmount")
             elif direction == "sell":
-                amount_sol = float(swap.get("nativeOutputAmount", 0)) / 1e9
-
-            if not amount_sol:
-                continue
+                native_amount = swap.get("nativeOutputAmount")
 
             if mint not in tokens:
                 tokens[mint] = {
@@ -93,26 +90,32 @@ def analyze_wallet(wallet):
                     "sell_amount_sol": 0,
                     "buy_ts": None,
                     "sell_ts": None,
-                    "profit_sol": 0,
+                    "profit_sol": None,
                     "duration": "-"
                 }
 
             t = tokens[mint]
             if direction == "buy":
                 t["buy_count"] += 1
-                t["buy_amount_sol"] += amount_sol
+                if native_amount:
+                    t["buy_amount_sol"] += float(native_amount) / 1e9
                 if not t["buy_ts"]:
                     t["buy_ts"] = timestamp
             else:
                 t["sell_count"] += 1
-                t["sell_amount_sol"] += amount_sol
+                if native_amount:
+                    t["sell_amount_sol"] += float(native_amount) / 1e9
                 if not t["sell_ts"]:
                     t["sell_ts"] = timestamp
+
+            if t["buy_amount_sol"] and t["sell_amount_sol"]:
                 t["profit_sol"] = t["sell_amount_sol"] - t["buy_amount_sol"]
-                if t["buy_ts"] and t["sell_ts"]:
-                    t["duration"] = format_duration(t["buy_ts"], t["sell_ts"])
+            if t["buy_ts"] and t["sell_ts"]:
+                t["duration"] = format_duration(t["buy_ts"], t["sell_ts"])
 
     for t in tokens.values():
+        if t["profit_sol"] is None:
+            continue
         if t["profit_sol"] > 0:
             total_profit += t["profit_sol"]
             wins += 1
@@ -165,11 +168,18 @@ def generate_excel(wallet, tokens, summary):
             cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
 
     for t in tokens.values():
-        profit_pct = round((t["profit_sol"] / t["buy_amount_sol"] * 100), 2) if t["buy_amount_sol"] else 0
+        if t["profit_sol"] is None:
+            profit = "n/a"
+            profit_pct = "n/a"
+        else:
+            profit = round(t["profit_sol"], 4)
+            profit_pct = round((t["profit_sol"] / t["buy_amount_sol"] * 100), 2) if t["buy_amount_sol"] else 0
+
         row = [
             t["mint"], t["buy_count"], t["sell_count"],
-            round(t["buy_amount_sol"], 4), round(t["sell_amount_sol"], 4),
-            round(t["profit_sol"], 4), profit_pct, t["duration"],
+            round(t["buy_amount_sol"], 4) if t["buy_amount_sol"] else "n/a",
+            round(t["sell_amount_sol"], 4) if t["sell_amount_sol"] else "n/a",
+            profit, profit_pct, t["duration"],
             f"https://solscan.io/token/{t['mint']}",
             f"https://birdeye.so/token/{t['mint']}"
         ]
@@ -177,10 +187,10 @@ def generate_excel(wallet, tokens, summary):
 
         profit_cell = ws[f"F{ws.max_row}"]
         profit_pct_cell = ws[f"G{ws.max_row}"]
-        if t["profit_sol"] > 0:
+        if isinstance(profit, float) and profit > 0:
             profit_cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
             profit_pct_cell.fill = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-        elif t["profit_sol"] < 0:
+        elif isinstance(profit, float) and profit < 0:
             profit_cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
             profit_pct_cell.fill = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
 
@@ -200,7 +210,7 @@ def process_wallet(message):
         try:
             tokens, summary = analyze_wallet(wallet)
             if not tokens:
-                bot.send_message(message.chat.id, "Не удалось найти валидные сделки.")
+                bot.send_message(message.chat.id, "Не удалось найти токены.")
                 return
             excel = generate_excel(wallet, tokens, summary)
             with open(excel, "rb") as f:
