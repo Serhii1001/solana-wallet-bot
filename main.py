@@ -214,37 +214,5 @@ def generate_excel(tokens, summary):
             rec['mcap_in'], rec['mcap_out'], rec['mcap_cur'],
             f"https://solscan.io/token/{rec['mint']}",
             f"=HYPERLINK(\"https://dexscreener.com/solana/token/{rec['mint']}\", \"View trades\")",
-            f"=HYPERLINK(\"https://photon.tools/token/{rec['mint']}\", \"View trades\")"\н        ]
-        ws.append(row)
-        color = 'C6EFCE' if rec['delta'] > 0 else 'FFC7CE'
-        for col in (4, 5):
-            ws.cell(row=ws.max_row, column=col).fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
-    fname = f"report_{summary['wallet']}_{datetime.now().strftime('%Y%m%d%H%M%S')}.xlsx"
-    wb.save(fname)
-    return fname
-
-# === Bot Handlers ===
-
-@bot.message_handler(commands=['start'])
-def welcome(message):
-    bot.reply_to(message, "Привет! Пришли Solana-адрес для отчёта.")
-
-@bot.message_handler(func=lambda m: True)
-def handle_wallet(message):
-    wallet = message.text.strip()
-    bot.reply_to(message, "Формирую отчёт, подождите...")
-    try:
-        tokens, summary = analyze_wallet(wallet)
-        if not tokens:
-            return bot.send_message(message.chat.id, "Не найдено транзакций.")
-        path = generate_excel(tokens, summary)
-        with open(path, 'rb') as f:
-            bot.send_document(message.chat.id, f)
-        os.remove(path)
-    except Exception as e:
-        bot.send_message(message.chat.id, f"Ошибка: {e}")
-
-# === Run Bot ===
-
-if __name__ == "__main__":
-    bot.infinity_polling()
+            f"=HYPERLINK(\"https://photon.tools/token/{rec['mint']}\", \"View trades\")"
+        ]
