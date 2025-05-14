@@ -295,5 +295,9 @@ def handle_wallet(message):
     bot.edit_message_text('Готово! Смотрите отчёт ниже.', chat_id=message.chat.id, message_id=msg.message_id)
 
 if __name__ == '__main__':
+    # Ensure no webhook is set to avoid polling conflict
+    from telebot import apihelper
+    apihelper.delete_webhook(token=TELEGRAM_TOKEN)
     bot.remove_webhook()
+    # Start long polling
     bot.infinity_polling()
