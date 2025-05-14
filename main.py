@@ -168,6 +168,7 @@ def process_wallet(message):
     else:
         bot.reply_to(message, "Пожалуйста, отправь корректный Solana-адрес.")
 
+bot.remove_webhook()  # Удаляет конфликтующий webhook
 threading.Thread(target=bot.polling, daemon=True).start()
 PORT = 10000
 Handler = http.server.SimpleHTTPRequestHandler
