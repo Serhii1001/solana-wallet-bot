@@ -1,5 +1,4 @@
 import os
-import json
 import requests
 import telebot
 from datetime import datetime
@@ -26,6 +25,36 @@ def safe_request(url, params=None, retries=3):
             continue
     return {}
 
+
+def fetch_all_txs(wallet, limit=500, period_cutoff_ts=None):
+    """
+    Fetch all transactions for a wallet with pagination,
+    stopping if transactions older than cutoff timestamp.
+    """
+    url_base = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions"
+    all_txs = []
+    cursor = None
+
+    while True:
+        params = {"api-key": HELIUS_API_KEY, "limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        resp = safe_request(url_base, params)
+        # API may return list directly or under 'transactions'
+        txs = resp.get("transactions", resp)
+        if not txs:
+            break
+        for tx in txs:
+            ts = tx.get("timestamp", 0)
+            if period_cutoff_ts and ts < period_cutoff_ts:
+                return all_txs
+            all_txs.append(tx)
+        cursor = resp.get("nextCursor")
+        if not cursor:
+            break
+    return all_txs
+
+
 def get_sol_price():
     try:
         price = float(SOL_PRICE_ENV)
@@ -36,10 +65,12 @@ def get_sol_price():
     data = safe_request(COINGECKO_PRICE_URL, {"ids": "solana", "vs_currencies": "usd"})
     return data.get("solana", {}).get("usd", 0)
 
+
 def get_symbol(mint):
     url = f"https://api.helius.xyz/v0/mints/{mint}?api-key={HELIUS_API_KEY}"
     data = safe_request(url)
     return data.get("symbol", mint[:6])
+
 
 def get_historical_mcap(mint, timestamp_ms):
     url = f"{DEXSCREENER_BASE}{mint}/chart?interval=1h"
@@ -47,22 +78,24 @@ def get_historical_mcap(mint, timestamp_ms):
     points = data.get("chart", [])
     if not points:
         return None
-    # find closest point by timestamp
-    target = timestamp_ms
-    best = min(points, key=lambda p: abs(p.get('timestamp', 0) - target))
+    best = min(points, key=lambda p: abs(p.get('timestamp', 0) - timestamp_ms))
     return best.get('marketCap')
+
 
 def get_current_mcap(mint):
     data = safe_request(DEXSCREENER_BASE + mint)
     return data.get('stats', {}).get('marketCap')
 
+
 def format_sol(val):
     sign = "+" if val > 0 else ""
     return f"{sign}{val:.2f} SOL"
 
+
 def format_pct(val):
     sign = "+" if val > 0 else ""
     return f"{sign}{val:.2f}%"
+
 
 def format_duration(start, end):
     if not start or not end:
@@ -82,33 +115,36 @@ def format_duration(start, end):
 
 # ---------------- Analysis ----------------
 def analyze_wallet(wallet, period_days=30):
-    # fetch transactions
-    url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=1000"
-    txs = safe_request(url) or []
-    # filter by period
+    # cutoff timestamp for filtering
     cutoff = datetime.utcnow().timestamp() - period_days * 86400
-    records = {}
+    # fetch all recent transactions
+    txs = fetch_all_txs(wallet, limit=500, period_cutoff_ts=cutoff)
 
     # fetch balance
     bal = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/balances?api-key={HELIUS_API_KEY}")
     balance = bal.get('nativeBalance', 0) / 1e9
 
+    records = {}
     for tx in txs:
         ts = tx.get('timestamp', 0)
-        if ts < cutoff:
-            continue
         dt = datetime.fromtimestamp(ts)
         fee = tx.get('fee', 0) / 1e9
+        # calculate native transfers per tx
+        native_transfers = tx.get('nativeTransfers', [])
+        spent_native = sum(n.get('amount', 0) / 1e9 for n in native_transfers if n.get('fromUserAccount') == wallet)
+        earned_native = sum(n.get('amount', 0) / 1e9 for n in native_transfers if n.get('toUserAccount') == wallet)
+
         for tr in tx.get('tokenTransfers', []):
             mint = tr.get('mint')
             amount = float(tr.get('tokenAmount', 0)) / (10 ** tr.get('decimals', 0))
-            direction = None
+            # determine direction of token transfer
             if tr.get('toUserAccount') == wallet:
                 direction = 'buy'
             elif tr.get('fromUserAccount') == wallet:
                 direction = 'sell'
-            if not direction:
+            else:
                 continue
+
             rec = records.setdefault(mint, {
                 'mint': mint,
                 'symbol': get_symbol(mint),
@@ -119,21 +155,22 @@ def analyze_wallet(wallet, period_days=30):
                 'first_mcap': None, 'last_mcap': None, 'current_mcap': None
             })
             rec['fee'] += fee
+
             if direction == 'buy':
                 rec['buys'] += 1
                 rec['income'] += amount
-                rec['spent'] += fee  # approximate cost via fee
+                rec['spent'] += spent_native
                 if not rec['first_ts']:
                     rec['first_ts'] = dt
-                    rec['first_mcap'] = get_historical_mcap(mint, ts*1000)
+                    rec['first_mcap'] = get_historical_mcap(mint, ts * 1000)
             else:
                 rec['sells'] += 1
                 rec['outcome'] += amount
-                rec['earned'] += fee
+                rec['earned'] += earned_native
                 rec['last_ts'] = dt
-                rec['last_mcap'] = get_historical_mcap(mint, ts*1000)
+                rec['last_mcap'] = get_historical_mcap(mint, ts * 1000)
 
-    # finalize records
+    # finalize metrics for each token
     for rec in records.values():
         rec['delta'] = rec['earned'] - rec['spent']
         rec['delta_pct'] = (rec['delta'] / rec['spent'] * 100) if rec['spent'] else 0
@@ -141,7 +178,7 @@ def analyze_wallet(wallet, period_days=30):
         rec['last_trade'] = rec['last_ts'] or rec['first_ts']
         rec['current_mcap'] = get_current_mcap(rec['mint'])
 
-    # summary
+    # summary metrics
     total_spent = sum(r['spent'] for r in records.values())
     total_earned = sum(r['earned'] for r in records.values())
     pnl = total_earned - total_spent
@@ -207,8 +244,6 @@ def generate_excel(wallet, records, summary):
     # MCAP distribution header
     ws['A5'] = '<5k'; ws['B5'] = '5k-30k'; ws['C5'] = '30k-100k'; ws['D5'] = '100k-300k'; ws['E5'] = '300k+'
     for cell in ws['A5:E5'][0]: cell.font = bold
-
-    # Empty
     ws.append([])
 
     # Table header
@@ -218,48 +253,49 @@ def generate_excel(wallet, records, summary):
         'First buy Mcap','Last tx Mcap','Current Mcap','Contract','Dexscreener','Photon'
     ]
     ws.append(headers)
-    for col_idx, val in enumerate(headers, start=1):
+    for col_idx, _ in enumerate(headers, start=1):
         cell = ws.cell(row=8, column=col_idx)
         cell.font = bold
         cell.alignment = center
 
-    # Sort records by last_trade descending
+    # Sort by last_trade desc
     sorted_records = sorted(records.values(), key=lambda r: r['last_trade'] or datetime.min, reverse=True)
     row = 9
     for rec in sorted_records:
-        fields = [
-            rec['symbol'],
-            rec['spent'], rec['earned'], rec['delta'], rec['delta_pct'],
-            rec['buys'], rec['sells'],
-            rec['last_trade'].strftime('%d.%m.%Y') if rec['last_trade'] else '-',
-            rec['income'], rec['outcome'], rec['fee'], rec['period'],
-            rec['first_mcap'] or 'N/A', rec['last_mcap'] or 'N/A', rec['current_mcap'] or 'N/A',
-            rec['mint']
-        ]
+        fields = [rec['symbol'], rec['spent'], rec['earned'], rec['delta'], rec['delta_pct'],
+                  rec['buys'], rec['sells'],
+                  rec['last_trade'].strftime('%d.%m.%Y') if rec['last_trade'] else '-',
+                  rec['income'], rec['outcome'], rec['fee'], rec['period'],
+                  rec['first_mcap'] or 'N/A', rec['last_mcap'] or 'N/A', rec['current_mcap'] or 'N/A', rec['mint']]
         for col_idx, val in enumerate(fields, start=1):
             cell = ws.cell(row=row, column=col_idx)
-            # format values
-            if col_idx == 2: cell.value = f"{val:.2f}"
-            elif col_idx in (3,): cell.value = f"{val:.2f}"
-            elif col_idx == 4: cell.value = format_sol(val)
-            elif col_idx == 5: cell.value = format_pct(val)
-            elif col_idx in (6,7): cell.value = val
-            elif col_idx == 8: cell.value = val
-            elif col_idx in (9,10): cell.value = f"{val:.6f}"
-            elif col_idx == 11: cell.value = f"{val:.5f}"
-            elif col_idx == 12: cell.value = val
-            else: cell.value = val
-        # hyperlinks
-        dex_hl = ws.cell(row=row, column=17)
-        dex_hl.value = 'View trades'; dex_hl.hyperlink = f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}"; dex_hl.style = 'Hyperlink'
-        pho_hl = ws.cell(row=row, column=18)
-        pho_hl.value = 'View trades'; pho_hl.hyperlink = f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"; pho_hl.style = 'Hyperlink'
+            if col_idx == 2:
+                cell.value = f"{val:.2f}"
+            elif col_idx == 3:
+                cell.value = f"{val:.2f}"
+            elif col_idx == 4:
+                cell.value = format_sol(val)
+            elif col_idx == 5:
+                cell.value = format_pct(val)
+            elif col_idx in (6, 7):
+                cell.value = val
+            elif col_idx == 8:
+                cell.value = val
+            elif col_idx in (9, 10):
+                cell.value = f"{val:.6f}"
+            elif col_idx == 11:
+                cell.value = f"{val:.5f}"
+            else:
+                cell.value = val
+        # Hyperlinks
+        ws.cell(row=row, column=17, value='View trades').hyperlink = f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}"
+        ws.cell(row=row, column=18, value='View trades').hyperlink = f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"
         row += 1
 
-    # Auto-adjust column widths
+    # Adjust column widths
     for col in ws.columns:
         max_length = 0
-        column = col[0].column_letter
+        col_letter = col[0].column_letter
         for cell in col:
             try:
                 length = len(str(cell.value))
@@ -267,9 +303,9 @@ def generate_excel(wallet, records, summary):
                     max_length = length
             except:
                 pass
-        ws.column_dimensions[column].width = max_length + 2
+        ws.column_dimensions[col_letter].width = max_length + 2
 
-    # Save file
+    # Save
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     filename = f"{wallet}_report_{timestamp}.xlsx"
     wb.save(filename)
