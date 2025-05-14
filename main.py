@@ -16,6 +16,7 @@ COINGECKO_PRICE_URL = "https://api.coingecko.com/api/v3/simple/price"
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
 # ---------------- Helper Functions ----------------
+
 def safe_request(url, params=None, retries=3):
     for _ in range(retries):
         try:
@@ -160,7 +161,7 @@ def analyze_wallet(wallet, period_days=30):
                     rec['first_mcap'] = get_historical_mcap(mint, ts * 1000)
             else:
                 rec['sells'] += 1
-                rec['outcome'] += amount
+                rec['outome'] += amount
                 rec['earned'] += earned_native
                 rec['last_ts'] = dt
                 rec['last_mcap'] = get_historical_mcap(mint, ts * 1000)
@@ -190,70 +191,3 @@ def analyze_wallet(wallet, period_days=30):
         'pnl': pnl,
         'winrate': winrate,
         'avg_win_pct': avg_win,
-        'pnl_loss': pnl_loss,
-        'balance_change': balance_change
-    }
-    return records, summary
-
-# ---------------- Excel Generation ----------------
-def generate_excel(wallet, records, summary):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "ArGhost table"
-
-    bold = Font(bold=True)
-    center = Alignment(horizontal='center', vertical='center')
-
-    ws.merge_cells('A1:D1'); ws['A1'] = 'Wallet'; ws['A1'].font = bold
-    ws.merge_cells('A2:D2'); ws['A2'] = summary['wallet']
-    ws.merge_cells('E1:F1'); ws['E1'] = 'TimePeriod'; ws['E1'].font = bold
-    ws.merge_cells('E2:F2'); ws['E2'] = summary['time_period']
-    ws.merge_cells('G1:H1'); ws['G1'] = 'SOL Price Now'; ws['G1'].font = bold
-    ws.merge_cells('G2:H2'); ws['G2'] = f"{summary['sol_price']} $"
-    ws.merge_cells('I1:J1'); ws['I1'] = 'Balance'; ws['I1'].font = bold
-    ws.merge_cells('I2:J2'); ws['I2'] = format_sol(summary['balance'])
-
-    metrics = [
-        ('WinRate', format_pct(summary['winrate'])),
-        ('PnL R', format_sol(summary['pnl'])),
-        ('PnL Loss', format_sol(summary['pnl_loss'])),
-        ('Avg Win %', format_pct(summary['avg_win_pct'])),
-        ('Balance change', format_pct(summary['balance_change']))
-    ]
-    col = 11
-    for name, value in metrics:
-        ws.cell(row=1, column=col, value=name).font = bold
-        ws.cell(row=2, column=col, value=value)
-        col += 2
-
-    ws.append([])
-    ws.append([])
-
-    ws['A5'] = '<5k'; ws['B5'] = '5k-30k'; ws['C5'] = '30k-100k'; ws['D5'] = '100k-300k'; ws['E5'] = '300k+'
-    for cell in ws['A5:E5'][0]: cell.font = bold
-    ws.append([])
-
-    headers = [
-        'Token','Spent SOL','Earned SOL','Delta SOL','Delta %',
-        'Buys','Sells','Last trade','Income','Outcome','Fee','Period',
-        'First buy Mcap','Last tx Mcap','Current Mcap','Contract','Dexscreener','Photon'
-    ]
-    ws.append(headers)
-    for idx in range(1, len(headers)+1):
-        ws.cell(row=8, column=idx).font = bold
-        ws.cell(row=8, column=idx).alignment = center
-
-    sorted_records = sorted(records.values(), key=lambda r: r['last_trade'] or datetime.min, reverse=True)
-    row = 9
-    for rec in sorted_records:
-        fields = [
-            rec['symbol'], rec['spent'], rec['earned'], rec['delta'], rec['delta_pct'],
-            rec['buys'], rec['sells'],
-            rec['last_trade'].strftime('%d.%m.%Y') if rec['last_trade'] else '-',
-            rec['income'], rec['outcome'], rec['fee'], rec['period'],
-            rec['first_mcap'] or 'N/A', rec['last_mcap'] or 'N/A', rec['current_mcap'] or 'N/A',
-            rec['mint']
-        ]
-        for col_idx, val in enumerate(fields, start=1):
-            cell = ws.cell(row=row, column=col_idx)
-            if col_idx == 2:
