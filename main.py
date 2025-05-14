@@ -219,4 +219,25 @@ def generate_excel(tokens, summary):
 # === Bot Handlers ===
 
 @bot.message_handler(commands=['start'])
-");}]}
+def welcome(message):
+    bot.reply_to(message, "Привет! Пришли Solana-адрес для отчёта.")
+
+@bot.message_handler(func=lambda m: True)
+def handle_wallet(message):
+    wallet = message.text.strip()
+    bot.reply_to(message, "Формирую отчёт, подождите...")
+    try:
+        tokens, summary = analyze_wallet(wallet)
+        if not tokens:
+            return bot.send_message(message.chat.id, "Не найдено транзакций.")
+        path = generate_excel(tokens, summary)
+        with open(path, 'rb') as f:
+            bot.send_document(message.chat.id, f)
+        os.remove(path)
+    except Exception as e:
+        bot.send_message(message.chat.id, f"Ошибка: {e}")
+
+# === Run Bot ===
+
+if __name__ == "__main__":
+    bot.infinity_polling()
