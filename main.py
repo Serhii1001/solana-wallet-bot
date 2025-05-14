@@ -1,279 +1,295 @@
 import os
+import json
 import requests
 import telebot
 from datetime import datetime
 from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Font, Alignment
 
-# ========== Конфиг ==========
-TELEGRAM_TOKEN   = os.getenv("BOT_TOKEN")
-HELIUS_API_KEY   = os.getenv("HELIUS_API_KEY")
+# ---------------- Configuration ----------------
+TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
+HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
+SOL_PRICE_ENV = os.getenv("SOL_PRICE") or "0"
 DEXSCREENER_BASE = "https://api.dexscreener.com/latest/dex/tokens/solana/"
-SOL_PRICE        = os.getenv("SOL_PRICE", "0")
+COINGECKO_PRICE_URL = "https://api.coingecko.com/api/v3/simple/price"
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 
-# ========== HTTP helpers ==========
-def safe_request(url, params=None):
-    """Надёжный GET с тремя попытками."""
-    for _ in range(3):
+# ---------------- Helper Functions ----------------
+def safe_request(url, params=None, retries=3):
+    for _ in range(retries):
         try:
-            r = requests.get(url, params=params, timeout=10)
-            if r.status_code == 200:
-                return r.json()
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
         except Exception:
-            pass
+            continue
     return {}
 
-# ========== Метаданные токена ==========
-def get_symbol(mint):
-    """
-    Берём символ токена через Dexscreener (там гарантированно есть stats.symbol).
-    Если сломается, вернём сам mint.
-    """
-    data = safe_request(DEXSCREENER_BASE + mint)
-    return data.get("stats", {}).get("symbol", mint)
+def get_sol_price():
+    try:
+        price = float(SOL_PRICE_ENV)
+        if price > 0:
+            return price
+    except ValueError:
+        pass
+    data = safe_request(COINGECKO_PRICE_URL, {"ids": "solana", "vs_currencies": "usd"})
+    return data.get("solana", {}).get("usd", 0)
 
-# ========== MCAP ==========
-def get_historical_mcap(mint, ts_dt):
-    """
-    Историческая MCAP близко к ts_dt (интервал 1h).
-    """
-    data = safe_request(f"{DEXSCREENER_BASE}{mint}/chart?interval=1h")
+def get_symbol(mint):
+    url = f"https://api.helius.xyz/v0/mints/{mint}?api-key={HELIUS_API_KEY}"
+    data = safe_request(url)
+    return data.get("symbol", mint[:6])
+
+def get_historical_mcap(mint, timestamp_ms):
+    url = f"{DEXSCREENER_BASE}{mint}/chart?interval=1h"
+    data = safe_request(url)
     points = data.get("chart", [])
     if not points:
-        return ""
-    target = int(ts_dt.timestamp() * 1000)
-    best = min(points, key=lambda p: abs(p.get("timestamp", 0) - target))
-    return best.get("marketCap", "")
+        return None
+    # find closest point by timestamp
+    target = timestamp_ms
+    best = min(points, key=lambda p: abs(p.get('timestamp', 0) - target))
+    return best.get('marketCap')
 
 def get_current_mcap(mint):
-    """
-    Текущая MCAP из stats.marketCap.
-    """
     data = safe_request(DEXSCREENER_BASE + mint)
-    return data.get("stats", {}).get("marketCap", "")
+    return data.get('stats', {}).get('marketCap')
 
-# ========== Утилита форматирования длительности ==========
+def format_sol(val):
+    sign = "+" if val > 0 else ""
+    return f"{sign}{val:.2f} SOL"
+
+def format_pct(val):
+    sign = "+" if val > 0 else ""
+    return f"{sign}{val:.2f}%"
+
 def format_duration(start, end):
     if not start or not end:
         return "-"
     delta = end - start
-    total_sec = int(delta.total_seconds())
-    days, rem = divmod(total_sec, 86400)
-    hours, rem = divmod(rem, 3600)
-    minutes, sec = divmod(rem, 60)
+    seconds = int(delta.total_seconds())
+    days, seconds = divmod(seconds, 86400)
+    hours, seconds = divmod(seconds, 3600)
+    minutes, seconds = divmod(seconds, 60)
     if days:
-        return f"{days}d {hours}h"
+        return f"{days} days"
     if hours:
         return f"{hours}h {minutes}m"
     if minutes:
         return f"{minutes}m"
-    return f"{sec}s"
+    return f"{seconds}s"
 
-# ========== Анализ кошелька ==========
-def analyze_wallet(wallet):
-    # 1) Получаем транзакции
-    txs = safe_request(
-        f"https://api.helius.xyz/v0/addresses/{wallet}/transactions",
-        params={"api-key": HELIUS_API_KEY, "limit": 100}
-    ) or []
+# ---------------- Analysis ----------------
+def analyze_wallet(wallet, period_days=30):
+    # fetch transactions
+    url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=1000"
+    txs = safe_request(url) or []
+    # filter by period
+    cutoff = datetime.utcnow().timestamp() - period_days * 86400
+    records = {}
 
-    # 2) Словарь для собираемых данных
-    tokens = {}
+    # fetch balance
+    bal = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/balances?api-key={HELIUS_API_KEY}")
+    balance = bal.get('nativeBalance', 0) / 1e9
 
-    # 3) Баланс SOL
-    bal = safe_request(
-        f"https://api.helius.xyz/v0/addresses/{wallet}/balances",
-        params={"api-key": HELIUS_API_KEY}
-    )
-    balance = bal.get("nativeBalance", 0) / 1e9
-
-    # 4) Перебираем все tx
     for tx in txs:
-        ts   = datetime.fromtimestamp(tx.get("timestamp", 0))
-        fee  = tx.get("fee", 0) / 1e9
-        native = tx.get("nativeTransfers", [])
-
-        # Складываем SOL-выход и вход
-        sol_out = sum(n.get("amount", 0)
-                      for n in native if n.get("fromUserAccount") == wallet) / 1e9
-        sol_in  = sum(n.get("amount", 0)
-                      for n in native if n.get("toUserAccount")   == wallet) / 1e9
-
-        # Пробегаем tokenTransfers
-        for tr in tx.get("tokenTransfers", []):
-            mint     = tr.get("mint")
-            amount   = float(tr.get("tokenAmount", 0)) / (10**tr.get("decimals", 0))
-            # направление сделки
-            direction = (
-                "buy"  if tr.get("toUserAccount")   == wallet else
-                "sell" if tr.get("fromUserAccount") == wallet else
-                None
-            )
+        ts = tx.get('timestamp', 0)
+        if ts < cutoff:
+            continue
+        dt = datetime.fromtimestamp(ts)
+        fee = tx.get('fee', 0) / 1e9
+        for tr in tx.get('tokenTransfers', []):
+            mint = tr.get('mint')
+            amount = float(tr.get('tokenAmount', 0)) / (10 ** tr.get('decimals', 0))
+            direction = None
+            if tr.get('toUserAccount') == wallet:
+                direction = 'buy'
+            elif tr.get('fromUserAccount') == wallet:
+                direction = 'sell'
             if not direction:
                 continue
-
-            # Инициализация записи
-            rec = tokens.setdefault(mint, {
-                "mint": mint,
-                "symbol": get_symbol(mint),
-                "spent_sol": 0.0,
-                "earned_sol": 0.0,
-                "fee": 0.0,
-                "buys": 0,
-                "sells": 0,
-                "in_tokens": 0.0,
-                "out_tokens": 0.0,
-                "first_ts": None,
-                "last_ts": None,
-                "first_mcap": "",
-                "last_mcap": "",
-                "current_mcap": ""
+            rec = records.setdefault(mint, {
+                'mint': mint,
+                'symbol': get_symbol(mint),
+                'spent': 0.0, 'earned': 0.0,
+                'fee': 0.0, 'buys': 0, 'sells': 0,
+                'income': 0.0, 'outcome': 0.0,
+                'first_ts': None, 'last_ts': None,
+                'first_mcap': None, 'last_mcap': None, 'current_mcap': None
             })
-
-            # накапливаем комиссию
-            rec["fee"] += fee
-
-            if direction == "buy":
-                rec["buys"]      += 1
-                rec["in_tokens"] += amount
-                rec["spent_sol"] += sol_out
-                if not rec["first_ts"]:
-                    rec["first_ts"]   = ts
-                    rec["first_mcap"] = get_historical_mcap(mint, ts)
+            rec['fee'] += fee
+            if direction == 'buy':
+                rec['buys'] += 1
+                rec['income'] += amount
+                rec['spent'] += fee  # approximate cost via fee
+                if not rec['first_ts']:
+                    rec['first_ts'] = dt
+                    rec['first_mcap'] = get_historical_mcap(mint, ts*1000)
             else:
-                rec["sells"]      += 1
-                rec["out_tokens"] += amount
-                rec["earned_sol"] += sol_in
-                rec["last_ts"]     = ts
-                rec["last_mcap"]   = get_historical_mcap(mint, ts)
+                rec['sells'] += 1
+                rec['outcome'] += amount
+                rec['earned'] += fee
+                rec['last_ts'] = dt
+                rec['last_mcap'] = get_historical_mcap(mint, ts*1000)
 
-    # 5) Финализация метрик
-    wins = losses = 0
-    total_win_pct = 0.0
-    for rec in tokens.values():
-        rec["delta_sol"] = rec["earned_sol"] - rec["spent_sol"]
-        rec["delta_pct"] = (rec["delta_sol"] / rec["spent_sol"] * 100
-                            if rec["spent_sol"] else 0)
-        rec["period"]     = format_duration(rec["first_ts"], rec["last_ts"])
-        rec["last_trade"] = rec["last_ts"] or rec["first_ts"]
-        rec["current_mcap"] = get_current_mcap(rec["mint"])
-        if rec["delta_sol"] > 0:
-            wins += 1
-            total_win_pct += rec["delta_pct"]
-        elif rec["delta_sol"] < 0:
-            losses += 1
+    # finalize records
+    for rec in records.values():
+        rec['delta'] = rec['earned'] - rec['spent']
+        rec['delta_pct'] = (rec['delta'] / rec['spent'] * 100) if rec['spent'] else 0
+        rec['period'] = format_duration(rec['first_ts'], rec['last_ts'])
+        rec['last_trade'] = rec['last_ts'] or rec['first_ts']
+        rec['current_mcap'] = get_current_mcap(rec['mint'])
 
-    winrate = round(wins / (wins + losses) * 100, 2) if (wins + losses) else 0
-    avg_win  = round(total_win_pct / wins, 2) if wins else 0
-    pnl      = round(sum(r["delta_sol"] for r in tokens.values()), 2)
-    pnl_loss = round(sum(r["delta_sol"] for r in tokens.values() if r["delta_sol"]<0), 2)
-    bal_change = round(pnl / (balance - pnl) * 100, 2) if balance else 0
+    # summary
+    total_spent = sum(r['spent'] for r in records.values())
+    total_earned = sum(r['earned'] for r in records.values())
+    pnl = total_earned - total_spent
+    wins = [r for r in records.values() if r['delta'] > 0]
+    losses = [r for r in records.values() if r['delta'] < 0]
+    winrate = len(wins) / max(len(records), 1) * 100
+    avg_win = sum(r['delta_pct'] for r in wins) / max(len(records), 1)
+    pnl_loss = sum(r['delta'] for r in losses)
+    balance_change = (pnl / total_spent * 100) if total_spent else 0
 
     summary = {
-        "wallet": wallet,
-        "balance": balance,
-        "pnl": pnl,
-        "avg_win_pct": avg_win,
-        "pnl_loss": pnl_loss,
-        "balance_change": bal_change,
-        "winrate": winrate,
-        "time_period": "30 days",
-        "sol_price": SOL_PRICE
+        'wallet': wallet,
+        'balance': balance,
+        'time_period': f"{period_days} days",
+        'sol_price': get_sol_price(),
+        'pnl': pnl,
+        'winrate': winrate,
+        'avg_win_pct': avg_win,
+        'pnl_loss': pnl_loss,
+        'balance_change': balance_change
     }
-    return tokens, summary
+    return records, summary
 
-# ========== Генерация Excel ==========
-def generate_excel(wallet, tokens, summary):
+# ---------------- Excel Generation ----------------
+def generate_excel(wallet, records, summary):
     wb = Workbook()
     ws = wb.active
-    ws.title = "Wallet Report"
+    ws.title = "ArGhost table"
 
-    # Метаданные
-    meta = [
-        ("Wallet", wallet),
-        ("WinRate", f"{summary['winrate']}%"),
-        ("PnL R", f"{summary['pnl']:.2f} SOL"),
-        ("Avg Win %", f"{summary['avg_win_pct']:.2f}%"),
-        ("PnL Loss", f"{summary['pnl_loss']:.2f} SOL"),
-        ("Balance change", f"{summary['balance_change']:.2f}%"),
-        ("TimePeriod", summary["time_period"]),
-        ("SOL Price Now", f"{summary['sol_price']} $"),
-        ("Balance", f"{summary['balance']:.2f} SOL"),
+    bold = Font(bold=True)
+    center = Alignment(horizontal='center', vertical='center')
+
+    # Header summary
+    ws.merge_cells('A1:D1'); ws['A1'] = 'Wallet'; ws['A1'].font = bold
+    ws.merge_cells('A2:D2'); ws['A2'] = summary['wallet']
+    ws.merge_cells('E1:F1'); ws['E1'] = 'TimePeriod'; ws['E1'].font = bold
+    ws.merge_cells('E2:F2'); ws['E2'] = summary['time_period']
+    ws.merge_cells('G1:H1'); ws['G1'] = 'SOL Price Now'; ws['G1'].font = bold
+    ws.merge_cells('G2:H2'); ws['G2'] = f"{summary['sol_price']} $"
+    ws.merge_cells('I1:J1'); ws['I1'] = 'Balance'; ws['I1'].font = bold
+    ws.merge_cells('I2:J2'); ws['I2'] = format_sol(summary['balance'])
+
+    # Metrics
+    metrics = [
+        ('WinRate', format_pct(summary['winrate'])),
+        ('PnL R', format_sol(summary['pnl'])),
+        ('PnL Loss', format_sol(summary['pnl_loss'])),
+        ('Avg Win %', format_pct(summary['avg_win_pct'])),
+        ('Balance change', format_pct(summary['balance_change']))
     ]
-    for i, (k, v) in enumerate(meta, start=1):
-        ws[f"A{i}"] = k
-        ws[f"A{i}"].font = Font(bold=True)
-        ws[f"B{i}"] = v
+    col = 11  # column K
+    for name, value in metrics:
+        cell_label = ws.cell(row=1, column=col)
+        cell_label.value = name; cell_label.font = bold
+        cell_value = ws.cell(row=2, column=col)
+        cell_value.value = value
+        col += 2
 
-    # Строка MCAP-категорий
-    start = len(meta) + 2
-    ws[f"A{start}"] = "Tokens entry MCAP:"
-    ws[f"A{start}"].font = Font(bold=True)
-    for idx, cat in enumerate(["<5k","5k–30k","30k–100k","100k–300k","300k+"], start=1):
-        ws.cell(row=start, column=idx+1, value=cat)
+    # Empty rows
+    ws.append([])
+    ws.append([])
 
-    # Заголовки таблицы
+    # MCAP distribution header
+    ws['A5'] = '<5k'; ws['B5'] = '5k-30k'; ws['C5'] = '30k-100k'; ws['D5'] = '100k-300k'; ws['E5'] = '300k+'
+    for cell in ws['A5:E5'][0]: cell.font = bold
+
+    # Empty
+    ws.append([])
+
+    # Table header
     headers = [
-        "Token","Spent SOL","Earned SOL","Delta Sol","Delta %",
-        "Buys","Sells","Last trade","Income","Outcome",
-        "Fee","Period","First buy Mcap","Last tx Mcap","Current Mcap",
-        "Contract","Dexscreener","Photon"
+        'Token','Spent SOL','Earned SOL','Delta SOL','Delta %',
+        'Buys','Sells','Last trade','Income','Outcome','Fee','Period',
+        'First buy Mcap','Last tx Mcap','Current Mcap','Contract','Dexscreener','Photon'
     ]
     ws.append(headers)
-    for cell in ws[start+2]:
-        cell.font = Font(bold=True)
-        cell.fill = PatternFill("solid", fgColor="DDDDDD")
+    for col_idx, val in enumerate(headers, start=1):
+        cell = ws.cell(row=8, column=col_idx)
+        cell.font = bold
+        cell.alignment = center
 
-    # Данные по токенам
-    for rec in tokens.values():
-        row = [
-            rec["symbol"],
-            f"{rec['spent_sol']:.2f} SOL",
-            f"{rec['earned_sol']:.2f} SOL",
-            f"{rec['delta_sol']:.2f} SOL",
-            f"{rec['delta_pct']:.2f}%",
-            rec["buys"],
-            rec["sells"],
-            rec["last_trade"].strftime("%d.%m.%Y"),
-            f"{rec['in_tokens']:.6f}",
-            f"{rec['out_tokens']:.6f}",
-            f"{rec['fee']:.5f}",
-            rec["period"],
-            rec.get("first_mcap",""),
-            rec.get("last_mcap",""),
-            rec.get("current_mcap",""),
-            rec["mint"],
-            f'=HYPERLINK("https://dexscreener.com/solana/{rec["mint"]}?maker={wallet}", "View trades")',
-            f'=HYPERLINK("https://photon.tools/token/{rec["mint"]}",        "View trades")'
+    # Sort records by last_trade descending
+    sorted_records = sorted(records.values(), key=lambda r: r['last_trade'] or datetime.min, reverse=True)
+    row = 9
+    for rec in sorted_records:
+        fields = [
+            rec['symbol'],
+            rec['spent'], rec['earned'], rec['delta'], rec['delta_pct'],
+            rec['buys'], rec['sells'],
+            rec['last_trade'].strftime('%d.%m.%Y') if rec['last_trade'] else '-',
+            rec['income'], rec['outcome'], rec['fee'], rec['period'],
+            rec['first_mcap'] or 'N/A', rec['last_mcap'] or 'N/A', rec['current_mcap'] or 'N/A',
+            rec['mint']
         ]
-        ws.append(row)
-        cr = ws.max_row
-        d_cell = ws[f"D{cr}"]; p_cell = ws[f"E{cr}"]
-        fill = PatternFill("solid", fgColor="C6EFCE") if rec["delta_sol"]>0 else PatternFill("solid", fgColor="FFC7CE")
-        d_cell.fill = p_cell.fill = fill
+        for col_idx, val in enumerate(fields, start=1):
+            cell = ws.cell(row=row, column=col_idx)
+            # format values
+            if col_idx == 2: cell.value = f"{val:.2f}"
+            elif col_idx in (3,): cell.value = f"{val:.2f}"
+            elif col_idx == 4: cell.value = format_sol(val)
+            elif col_idx == 5: cell.value = format_pct(val)
+            elif col_idx in (6,7): cell.value = val
+            elif col_idx == 8: cell.value = val
+            elif col_idx in (9,10): cell.value = f"{val:.6f}"
+            elif col_idx == 11: cell.value = f"{val:.5f}"
+            elif col_idx == 12: cell.value = val
+            else: cell.value = val
+        # hyperlinks
+        dex_hl = ws.cell(row=row, column=17)
+        dex_hl.value = 'View trades'; dex_hl.hyperlink = f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}"; dex_hl.style = 'Hyperlink'
+        pho_hl = ws.cell(row=row, column=18)
+        pho_hl.value = 'View trades'; pho_hl.hyperlink = f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"; pho_hl.style = 'Hyperlink'
+        row += 1
 
-    # Сохранение
-    fname = f"{wallet}_{datetime.now().strftime('%Y%m%d%H%M%S')}.xlsx"
-    wb.save(fname)
-    return fname
+    # Auto-adjust column widths
+    for col in ws.columns:
+        max_length = 0
+        column = col[0].column_letter
+        for cell in col:
+            try:
+                length = len(str(cell.value))
+                if length > max_length:
+                    max_length = length
+            except:
+                pass
+        ws.column_dimensions[column].width = max_length + 2
 
-# ========== Хендлеры бота ==========
+    # Save file
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"{wallet}_report_{timestamp}.xlsx"
+    wb.save(filename)
+    return filename
+
+# ---------------- Bot Handlers ----------------
 @bot.message_handler(commands=['start'])
-def cmd_start(msg):
-    bot.reply_to(msg, "Привет! Пришли Solana-адрес.")
+def cmd_start(message):
+    bot.reply_to(message, 'Привет! Отправь мне Solana-адрес для анализа.')
 
 @bot.message_handler(func=lambda m: True)
-def cmd_wallet(msg):
-    wallet = msg.text.strip()
-    bot.reply_to(msg, "Собираю отчет, подожди...")
-    tokens, summary = analyze_wallet(wallet)
-    fname = generate_excel(wallet, tokens, summary)
-    with open(fname, "rb") as f:
-        bot.send_document(msg.chat.id, f)
+def handle_wallet(message):
+    wallet = message.text.strip()
+    msg = bot.reply_to(message, 'Обрабатываю ваш запрос...')
+    records, summary = analyze_wallet(wallet)
+    fname = generate_excel(wallet, records, summary)
+    with open(fname, 'rb') as f:
+        bot.send_document(message.chat.id, f)
+    bot.edit_message_text('Готово! Смотрите отчёт ниже.', chat_id=message.chat.id, message_id=msg.message_id)
 
-# ========== Запуск ==========
-if __name__ == "__main__":
+if __name__ == '__main__':
     bot.remove_webhook()
     bot.infinity_polling()
