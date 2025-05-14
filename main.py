@@ -294,10 +294,30 @@ def handle_wallet(message):
         bot.send_document(message.chat.id, f)
     bot.edit_message_text('Готово! Смотрите отчёт ниже.', chat_id=message.chat.id, message_id=msg.message_id)
 
+# ---------------- Webhook Server Setup ----------------
+# Render expects a web service listening on $PORT.
+from flask import Flask, request
+app = Flask(__name__)
+
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # e.g. https://your-domain.com
+if not WEBHOOK_URL:
+    raise RuntimeError('WEBHOOK_URL env var must be set (e.g. https://your-domain.com)')
+WEBHOOK_PATH = f"/{TELEGRAM_TOKEN}"
+
+@app.route('/', methods=['GET'])
+def index():
+    return 'Bot is running.'
+
+@app.route(WEBHOOK_PATH, methods=['POST'])
+def webhook():
+    update = telebot.types.Update.de_json(request.get_data().decode('utf-8'))
+    bot.process_new_updates([update])
+    return '', 200
+
 if __name__ == '__main__':
-    # Ensure no webhook is set to avoid polling conflict
-    from telebot import apihelper
-    apihelper.delete_webhook(token=TELEGRAM_TOKEN)
+    # Remove any previous webhook and set a new one
     bot.remove_webhook()
-    # Start long polling
-    bot.infinity_polling()
+    bot.set_webhook(f"{WEBHOOK_URL}{WEBHOOK_PATH}")
+    # Start Flask server on the port provided by Render
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
