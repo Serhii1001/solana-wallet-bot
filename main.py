@@ -13,6 +13,16 @@ DEXSCREENER_BASE = "https://api.dexscreener.com/latest/dex/tokens/solana/"
 HELIUS_BALANCE_ENDPOINT = "https://api.helius.xyz/v0/addresses/{wallet}/balances"
 HELIUS_MINT_ENDPOINT = "https://api.helius.xyz/v0/mints/{}"
 
+# Initialize bot and clear webhook
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+bot.remove_webhook()
+try:
+    bot.delete_webhook(drop_pending_updates=True)
+except TypeError:
+    bot.delete_webhook()
+
+# === Helpers ===
+
 def safe_request(url, timeout=10, retries=2):
     for _ in range(retries):
         try:
@@ -20,39 +30,37 @@ def safe_request(url, timeout=10, retries=2):
             if resp.status_code == 200:
                 return resp.json()
         except requests.RequestException:
-            continue
+            pass
     return {}
 
-# Получение символа токена через Helius Mint endpoint
+
 def get_symbol(mint):
     data = safe_request(HELIUS_MINT_ENDPOINT.format(mint) + f"?api-key={HELIUS_API_KEY}")
     return data.get('symbol') or mint[:6]
 
-# Получение исторической MCAP через Dexscreener chart API
+
 def get_historical_mcap(mint, ts_dt):
-    # Запрашиваем график за последние 30 дней
     url = f"{DEXSCREENER_BASE}{mint}/chart?interval=1d"
     data = safe_request(url)
     points = data.get('chart', [])
     if not points:
         return 0
-    # Переводим ts_dt в мс
     target = int(ts_dt.timestamp() * 1000)
-    # Находим ближайшую точку
     best = min(points, key=lambda p: abs(p.get('timestamp', 0) - target))
     return best.get('marketCap', 0)
 
-# Текущий MCAP
+
 def get_current_mcap(mint):
     data = safe_request(DEXSCREENER_BASE + mint)
     return data.get('stats', {}).get('marketCap', 0)
 
-# Получение транзакций
+
 def get_transactions(wallet, limit=500):
     txs = []
     before = None
     while len(txs) < limit:
-        url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100"
+        url = (f"https://api.helius.xyz/v0/addresses/{wallet}/transactions"
+               f"?api-key={HELIUS_API_KEY}&limit=100")
         if before:
             url += f"&before={before}"
         batch = safe_request(url)
@@ -64,13 +72,14 @@ def get_transactions(wallet, limit=500):
             break
     return txs
 
-# Баланс кошелька
+
 def get_balance(wallet):
     data = safe_request(HELIUS_BALANCE_ENDPOINT.format(wallet=wallet) + f"?api-key={HELIUS_API_KEY}")
     lamports = data.get('nativeBalance', 0) if isinstance(data, dict) else 0
     return round(lamports / 1e9, 4)
 
-# Анализ кошелька
+# === Analysis ===
+
 def analyze_wallet(wallet):
     txs = get_transactions(wallet)
     tokens = {}
@@ -83,7 +92,9 @@ def analyze_wallet(wallet):
         fee = tx.get('fee', 0)/1e9
         for tr in tx.get('tokenTransfers', []):
             mint = tr['mint']
-            direction = 'buy' if tr.get('toUserAccount') == wallet else 'sell' if tr.get('fromUserAccount') == wallet else None
+            direction = ('buy' if tr.get('toUserAccount') == wallet
+                         else 'sell' if tr.get('fromUserAccount') == wallet
+                         else None)
             if not direction:
                 continue
             rec = tokens.setdefault(mint, {
@@ -113,7 +124,6 @@ def analyze_wallet(wallet):
                 rec['fee'] += fee
                 rec['last_ts'] = ts_dt
                 rec['last_price'] = round(earned/amount, 6) if amount else 0.0
-    # Сводная статистика
     total_spent = total_earned = 0.0
     wins = losses = 0
     profit_percents = []
@@ -152,36 +162,35 @@ def analyze_wallet(wallet):
     }
     return tokens, summary
 
-# Генерация Excel
-```python
+# === Report Generation ===
+
 def generate_excel(tokens, summary):
     wb = Workbook()
     ws = wb.active
-    # Метаданные
+    # Metadata
     meta_h = ['Wallet', '', '', '', 'WinRate', 'PnL R', '', 'Avg Win %', 'PnL Loss', 'Balance change', '', 'TimePeriod', 'SOL Price Now', 'Balance']
     meta_v = [summary['wallet'], '', '', '', summary['winrate'], summary['pnl'], '', summary['avgwin'], summary['pnlloss'], summary['balchg'], '', summary['period'], summary['solprice'], summary['balance']]
     ws.append(meta_h)
     ws.append(meta_v)
-    # Классификация MCAP
+    # Classification
     ws.append(['']*len(meta_h))
     ws.append(['Tokens entry MCAP:'])
     ws.append(['<5k', '5k-30k', '30k-100k', '100k-300k', '300k+'])
     ws.append(['']*len(meta_h))
     ws.append(['']*len(meta_h))
-    # Заголовки таблицы
+    # Table header
     hdr = ['Token', 'Spent SOL', 'Earned SOL', 'Delta Sol', 'Delta %', 'Buys', 'Sells', 'Last trade', 'Income', 'Outcome', 'Fee', 'Period', 'First buy Mcap', 'Last tx Mcap', 'Current Mcap', 'Contract', 'Dexscreener', 'Photon']
     ws.append(hdr)
     for col in range(1, len(hdr)+1):
-        cell = ws.cell(row=ws.max_row, column=col)
+        cell = ws.cell(ws.max_row, col)
         cell.font = Font(bold=True)
         cell.fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-    # Строки данных
+    # Data rows
     for rec in tokens.values():
         date = rec['last_trade'].strftime('%d.%m.%Y') if rec['last_trade'] else '-'
-        period = '-'
         if rec['first_ts'] and rec['last_ts']:
-            sec = (rec['last_ts'] - rec['first_ts']).total_seconds()
-            mins, sec = divmod(int(sec), 60)
+            secs = int((rec['last_ts'] - rec['first_ts']).total_seconds())
+            mins, sec = divmod(secs, 60)
             hrs, mins = divmod(mins, 60)
             if hrs:
                 period = f"{hrs}h {mins}m"
@@ -189,6 +198,8 @@ def generate_excel(tokens, summary):
                 period = f"{mins} min"
             else:
                 period = f"{sec}s"
+        else:
+            period = '-'
         row = [
             rec['symbol'],
             f"{round(rec['spent'],2)} SOL", f"{round(rec['earned'],2)} SOL",
@@ -203,8 +214,33 @@ def generate_excel(tokens, summary):
         ws.append(row)
         color = 'C6EFCE' if rec['delta'] > 0 else 'FFC7CE'
         for col in (4, 5):
-            ws.cell(row=ws.max_row, column=col).fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
+            ws.cell(ws.max_row, col).fill = PatternFill(start_color=color, end_color=color, fill_type="solid")
     fname = f"report_{summary['wallet']}_{datetime.now().strftime('%Y%m%d%H%M%S')}.xlsx"
     wb.save(fname)
     return fname
-```
+
+# === Bot Handlers ===
+
+@bot.message_handler(commands=['start'])
+def welcome(message):
+    bot.reply_to(message, "Привет! Пришли Solana-адрес для отчёта.")
+
+@bot.message_handler(func=lambda m: True)
+def handle_wallet(message):
+    wallet = message.text.strip()
+    bot.reply_to(message, "Формирую отчёт, подождите...")
+    try:
+        tokens, summary = analyze_wallet(wallet)
+        if not tokens:
+            return bot.send_message(message.chat.id, "Не найдено транзакций.")
+        path = generate_excel(tokens, summary)
+        with open(path, 'rb') as f:
+            bot.send_document(message.chat.id, f)
+        os.remove(path)
+    except Exception as e:
+        bot.send_message(message.chat.id, f"Ошибка: {e}")
+
+# === Run Bot ===
+
+if __name__ == "__main__":
+    bot.infinity_polling()
