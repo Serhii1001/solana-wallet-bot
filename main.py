@@ -294,5 +294,18 @@ if __name__ == '__main__':
     http_thread = threading.Thread(target=start_http_server, daemon=True)
     http_thread.start()
 
-    # Start polling in main thread
-    bot.infinity_polling()
+        # Start polling with conflict recovery
+    import time
+    while True:
+        try:
+            bot.infinity_polling(skip_pending=True, none_stop=True)
+        except telebot.apihelper.ApiTelegramException as e:
+            # Handle conflict error by retrying after a short delay
+            msg = str(e)
+            if 'Conflict: terminated by other getUpdates request' in msg:
+                print('Conflict error, retrying polling...')
+                time.sleep(5)
+                continue
+            else:
+                raise
+    
