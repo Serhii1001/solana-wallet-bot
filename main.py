@@ -292,10 +292,9 @@ if __name__ == '__main__':
     apihelper.delete_webhook(token=TELEGRAM_TOKEN)
     bot.remove_webhook()
 
-    # Simple HTTP server to bind a port for Render
-    import threading, http.server, socketserver
+    # Simple HTTP server to satisfy Render port binding
+    import threading, http.server, socketserver, time
     PORT = int(os.environ.get('PORT', 5000))
-
     class Handler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
@@ -307,20 +306,22 @@ if __name__ == '__main__':
             print(f"Serving HTTP on port {PORT}")
             httpd.serve_forever()
 
-    # Start HTTP server thread
+    # Launch HTTP server in background
     http_thread = threading.Thread(target=start_http_server, daemon=True)
     http_thread.start()
 
-    # Start polling with conflict recovery
-    import time
+    # Start Telegram polling with automatic retry on conflicts
+    from telebot.apihelper import ApiTelegramException
     while True:
         try:
-            bot.infinity_polling(skip_pending=True, non_stop=True)
-        except telebot.apihelper.ApiTelegramException as e:
-            msg = str(e)
-            if 'Conflict: terminated by other getUpdates request' in msg:
+            bot.polling(none_stop=True, timeout=60)
+        except ApiTelegramException as e:
+            if 'Conflict: terminated by other getUpdates request' in str(e):
                 print('Conflict error, retrying polling...')
                 time.sleep(5)
                 continue
             else:
                 raise
+        except Exception as ex:
+            print(f'Polling error: {ex}, retrying...')
+            time.sleep(5)
