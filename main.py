@@ -270,6 +270,21 @@ def generate_excel(wallet, records, summary):
     wb.save(filename)
     return filename
 
+# ---------------- Bot Handlers ----------------
+@bot.message_handler(commands=['start'])
+def cmd_start(message):
+    bot.reply_to(message, 'Привет! Отправь мне Solana-адрес для анализа.')
+
+@bot.message_handler(func=lambda m: True)
+def handle_wallet(message):
+    wallet = message.text.strip()
+    msg = bot.reply_to(message, 'Обрабатываю ваш запрос...')
+    records, summary = analyze_wallet(wallet)
+    fname = generate_excel(wallet, records, summary)
+    with open(fname, 'rb') as f:
+        bot.send_document(message.chat.id, f)
+    bot.edit_message_text('Готово! Смотрите отчёт ниже.', chat_id=message.chat.id, message_id=msg.message_id)
+
 # ---------------- Bot Startup ----------------
 if __name__ == '__main__':
     from telebot import apihelper
