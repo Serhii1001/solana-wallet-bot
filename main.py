@@ -257,8 +257,8 @@ def generate_excel(wallet, records, summary):
             rec['buys'], rec['sells'], rec['last_trade'].strftime('%d.%m.%Y') if rec['last_trade'] else '-',
             rec['income'], rec['outcome'], rec['fee'], rec['period'],
             rec['first_mcap'] or 'N/A', rec['last_mcap'] or 'N/A', rec['current_mcap'] or 'N/A', rec['mint'],
-            f'https://dexscreener.com/solana/{rec['mint']}?maker={wallet}',
-            f'https://photon-sol.tinyastro.io/en/lp/{rec['mint']}'
+            f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}",
+            f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"
         ])
 
     # Auto-fit columns
