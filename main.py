@@ -5,6 +5,7 @@ from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
 from openpyxl.utils import get_column_letter
+from flask import Flask, request
 
 # ---------------- Configuration ----------------
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
@@ -12,12 +13,16 @@ HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 SOL_PRICE_ENV = os.getenv("SOL_PRICE") or "0"
 DEXSCREENER_BASE = "https://api.dexscreener.com/latest/dex/tokens/solana/"
 COINGECKO_PRICE_URL = "https://api.coingecko.com/api/v3/simple/price"
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # e.g. https://your-domain.com
 
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
-
-# Ensure Helius API key is configured
 if not HELIUS_API_KEY:
     raise RuntimeError("HELIUS_API_KEY env var not set. Please configure your Helius API key.")
+if not WEBHOOK_URL:
+    raise RuntimeError("WEBHOOK_URL env var must be set (e.g. https://your-domain.com)")
+
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+app = Flask(__name__)
+WEBHOOK_PATH = f"/{TELEGRAM_TOKEN}"
 
 # ---------------- Helper Functions ----------------
 def safe_request(url, params=None, retries=3):
@@ -144,9 +149,11 @@ def analyze_wallet(wallet, period_days=30):
                 continue
 
             rec = records.setdefault(mint, {
-                'mint': mint, 'symbol': get_symbol(mint),
-                'spent': 0.0, 'earned': 0.0, 'fee': 0.0,
-                'buys': 0, 'sells': 0, 'income': 0.0, 'outcome': 0.0,
+                'mint': mint,
+                'symbol': get_symbol(mint),
+                'spent': 0.0, 'earned': 0.0,
+                'fee': 0.0, 'buys': 0, 'sells': 0,
+                'income': 0.0, 'outcome': 0.0,
                 'first_ts': None, 'last_ts': None,
                 'first_mcap': None, 'last_mcap': None, 'current_mcap': None
             })
@@ -165,7 +172,6 @@ def analyze_wallet(wallet, period_days=30):
                 rec['last_ts'] = dt
                 rec['last_mcap'] = get_historical_mcap(mint, ts*1000)
 
-    # finalize metrics
     for rec in records.values():
         rec['delta'] = rec['earned'] - rec['spent']
         rec['delta_pct'] = (rec['delta'] / rec['spent'] * 100) if rec['spent'] else 0
@@ -175,149 +181,3 @@ def analyze_wallet(wallet, period_days=30):
 
     total_spent = sum(r['spent'] for r in records.values())
     total_earned = sum(r['earned'] for r in records.values())
-    pnl = total_earned - total_spent
-    wins = [r for r in records.values() if r['delta'] > 0]
-    losses = [r for r in records.values() if r['delta'] < 0]
-    winrate = len(wins) / max(len(records), 1) * 100
-    avg_win = sum(r['delta_pct'] for r in wins) / max(len(records), 1)
-    pnl_loss = sum(r['delta'] for r in losses)
-    balance_change = (pnl / total_spent * 100) if total_spent else 0
-
-    summary = {
-        'wallet': wallet,
-        'balance': balance,
-        'time_period': f"{period_days} days",
-        'sol_price': get_sol_price(),
-        'pnl': pnl,
-        'winrate': winrate,
-        'avg_win_pct': avg_win,
-        'pnl_loss': pnl_loss,
-        'balance_change': balance_change
-    }
-    return records, summary
-
-# ---------------- Excel Generation ----------------
-def generate_excel(wallet, records, summary):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "ArGhost table"
-    bold = Font(bold=True)
-    center = Alignment(horizontal='center', vertical='center')
-
-    # Header
-    ws.merge_cells('A1:D1'); ws['A1'] = 'Wallet'; ws['A1'].font = bold
-    ws.merge_cells('A2:D2'); ws['A2'] = summary['wallet']
-    ws.merge_cells('E1:F1'); ws['E1'] = 'TimePeriod'; ws['E1'].font = bold
-    ws.merge_cells('E2:F2'); ws['E2'] = summary['time_period']
-    ws.merge_cells('G1:H1'); ws['G1'] = 'SOL Price Now'; ws['G1'].font = bold
-    ws.merge_cells('G2:H2'); ws['G2'] = f"{summary['sol_price']} $"
-    ws.merge_cells('I1:J1'); ws['I1'] = 'Balance'; ws['I1'].font = bold
-    ws.merge_cells('I2:J2'); ws['I2'] = format_sol(summary['balance'])
-
-    # Metrics
-    metrics = [
-        ('WinRate', format_pct(summary['winrate'])),
-        ('PnL R', format_sol(summary['pnl'])),
-        ('PnL Loss', format_sol(summary['pnl_loss'])),
-        ('Avg Win %', format_pct(summary['avg_win_pct'])),
-        ('Balance change', format_pct(summary['balance_change']))
-    ]
-    col = 11
-    for name, value in metrics:
-        ws.cell(row=1, column=col, value=name).font = bold
-        ws.cell(row=2, column=col, value=value)
-        col += 2
-
-    # Empty rows
-    ws.append([])
-    ws.append([])
-
-    # MCAP headers
-    ws.append(['<5k', '5k-30k', '30k-100k', '100k-300k', '300k+'])
-    for cell in ws[5][:5]: cell.font = bold
-    ws.append([])
-
-    # Table headers
-    headers = [
-        'Token','Spent SOL','Earned SOL','Delta SOL','Delta %',
-        'Buys','Sells','Last trade','Income','Outcome','Fee','Period',
-        'First buy Mcap','Last tx Mcap','Current Mcap','Contract','Dexscreener','Photon'
-    ]
-    ws.append(headers)
-    for idx in range(1, len(headers)+1):
-        ws.cell(row=8, column=idx).font = bold
-        ws.cell(row=8, column=idx).alignment = center
-
-    # Data rows
-    sorted_rec = sorted(records.values(), key=lambda r: r['last_trade'] or datetime.min, reverse=True)
-    for rec in sorted_rec:
-        fields = [
-            rec['symbol'], rec['spent'], rec['earned'], rec['delta'], rec['delta_pct'],
-            rec['buys'], rec['sells'],
-            rec['last_trade'].strftime('%d.%m.%Y') if rec['last_trade'] else '-',
-            rec['income'], rec['outcome'], rec['fee'], rec['period'],
-            rec['first_mcap'] or 'N/A', rec['last_mcap'] or 'N/A', rec['current_mcap'] or 'N/A',
-            rec['mint'],
-            f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}",
-            f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"
-        ]
-        ws.append(fields)
-
-    # Hyperlinks and formatting
-    for row in range(9, 9+len(sorted_rec)):
-        ws.cell(row=row, column=17).value = 'View trades'
-        ws.cell(row=row, column=17).hyperlink = ws.cell(row=row, column=17).value
-        ws.cell(row=row, column=18).value = 'View trades'
-        ws.cell(row=row, column=18).hyperlink = ws.cell(row=row, column=18).value
-
-    # Auto-fit columns
-    for i, col_cells in enumerate(ws.columns, 1):
-        length = max(len(str(c.value)) for c in col_cells if c.value)
-        ws.column_dimensions[get_column_letter(i)].width = length + 2
-
-    filename = f"{wallet}_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    wb.save(filename)
-    return filename
-
-# ---------------- Bot Handlers ----------------
-@bot.message_handler(commands=['start'])
-def cmd_start(message):
-    bot.reply_to(message, 'Привет! Отправь мне Solana-адрес для анализа.')
-
-@bot.message_handler(func=lambda m: True)
-def handle_wallet(message):
-    wallet = message.text.strip()
-    msg = bot.reply_to(message, 'Обрабатываю ваш запрос...')
-    records, summary = analyze_wallet(wallet)
-    fname = generate_excel(wallet, records, summary)
-    with open(fname, 'rb') as f:
-        bot.send_document(message.chat.id, f)
-    bot.edit_message_text('Готово! Смотрите отчёт ниже.', chat_id=message.chat.id, message_id=msg.message_id)
-
-# ---------------- Webhook Server Setup ----------------
-# Render expects a web service listening on $PORT.
-from flask import Flask, request
-app = Flask(__name__)
-
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # e.g. https://your-domain.com
-if not WEBHOOK_URL:
-    raise RuntimeError('WEBHOOK_URL env var must be set (e.g. https://your-domain.com)')
-WEBHOOK_PATH = f"/{TELEGRAM_TOKEN}"
-
-@app.route('/', methods=['GET'])
-def index():
-    return 'Bot is running.'
-
-@app.route(WEBHOOK_PATH, methods=['POST'])
-def webhook():
-    update = telebot.types.Update.de_json(request.get_data().decode('utf-8'))
-    bot.process_new_updates([update])
-    return '', 200
-
-if __name__ == '__main__':
-    # Remove any previous webhook and set a new one
-    bot.remove_webhook()
-    bot.set_webhook(f"{WEBHOOK_URL}{WEBHOOK_PATH}")
-    # Start Flask server on the port provided by Render
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
