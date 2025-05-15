@@ -291,16 +291,15 @@ if __name__ == '__main__':
             print(f"Serving HTTP on port {PORT}")
             httpd.serve_forever()
 
-    http_thread = threading.Thread(target=start_http_server, daemon=True)
+        http_thread = threading.Thread(target=start_http_server, daemon=True)
     http_thread.start()
 
-        # Start polling with conflict recovery
+    # Start polling with conflict recovery
     import time
     while True:
         try:
-            bot.infinity_polling(skip_pending=True, none_stop=True)
+            bot.infinity_polling(skip_pending=True, non_stop=True)
         except telebot.apihelper.ApiTelegramException as e:
-            # Handle conflict error by retrying after a short delay
             msg = str(e)
             if 'Conflict: terminated by other getUpdates request' in msg:
                 print('Conflict error, retrying polling...')
@@ -308,4 +307,3 @@ if __name__ == '__main__':
                 continue
             else:
                 raise
-    
