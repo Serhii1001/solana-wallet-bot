@@ -286,12 +286,14 @@ if __name__ == '__main__':
             self.end_headers()
             self.wfile.write(b'OK')
 
-    def start_http_server():
+        def start_http_server():
         with socketserver.TCPServer(('', PORT), Handler) as httpd:
             print(f"Serving HTTP on port {PORT}")
             httpd.serve_forever()
 
-        http_thread = threading.Thread(target=start_http_server, daemon=True)
+    # Start HTTP server thread
+    http_thread = threading.Thread(target=start_http_server, daemon=True)
+    http_thread.start()(target=start_http_server, daemon=True)
     http_thread.start()
 
     # Start polling with conflict recovery
