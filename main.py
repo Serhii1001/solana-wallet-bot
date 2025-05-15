@@ -207,4 +207,93 @@ def generate_excel(wallet, records, summary):
 
     # Header summary
     ws.merge_cells('A1:D1'); ws['A1'] = 'Wallet'; ws['A1'].font = bold
-    ws.merge
+    ws.merge_cells('A2:D2'); ws['A2'] = summary['wallet']
+    ws.merge_cells('E1:F1'); ws['E1'] = 'TimePeriod'; ws['E1'].font = bold
+    ws.merge_cells('E2:F2'); ws['E2'] = summary['time_period']
+    ws.merge_cells('G1:H1'); ws['G1'] = 'SOL Price Now'; ws['G1'].font = bold
+    ws.merge_cells('G2:H2'); ws['G2'] = f"{summary['sol_price']} $"
+    ws.merge_cells('I1:J1'); ws['I1'] = 'Balance'; ws['I1'].font = bold
+    ws.merge_cells('I2:J2'); ws['I2'] = format_sol(summary['balance'])
+
+    # Metrics
+    metrics = [
+        ('WinRate', format_pct(summary['winrate'])),
+        ('PnL R', format_sol(summary['pnl'])),
+        ('PnL Loss', format_sol(summary['pnl_loss'])),
+        ('Avg Win %', format_pct(summary['avg_win_pct'])),
+        ('Balance change', format_pct(summary['balance_change']))
+    ]
+    col = 11
+    for name, value in metrics:
+        ws.cell(row=1, column=col, value=name).font = bold
+        ws.cell(row=2, column=col, value=value)
+        col += 2
+
+    # Empty rows
+    ws.append([])
+    ws.append([])
+
+    # MCAP headers
+    ws.append(['<5k', '5k-30k', '30k-100k', '100k-300k', '300k+'])
+    for cell in ws[5][:5]: cell.font = bold
+    ws.append([])
+
+    # Table headers
+    headers = [
+        'Token','Spent SOL','Earned SOL','Delta SOL','Delta %',
+        'Buys','Sells','Last trade','Income','Outcome','Fee','Period',
+        'First buy Mcap','Last tx Mcap','Current Mcap','Contract','Dexscreener','Photon'
+    ]
+    ws.append(headers)
+    for idx in range(1, len(headers)+1):
+        ws.cell(row=8, column=idx).font = bold
+        ws.cell(row=8, column=idx).alignment = center
+
+    # Data rows and links
+    sorted_rec = sorted(records.values(), key=lambda r: r['last_trade'] or datetime.min, reverse=True)
+    for rec in sorted_rec:
+        ws.append([
+            rec['symbol'], rec['spent'], rec['earned'], format_sol(rec['delta']), format_pct(rec['delta_pct']),
+            rec['buys'], rec['sells'], rec['last_trade'].strftime('%d.%m.%Y') if rec['last_trade'] else '-',
+            rec['income'], rec['outcome'], rec['fee'], rec['period'],
+            rec['first_mcap'] or 'N/A', rec['last_mcap'] or 'N/A', rec['current_mcap'] or 'N/A', rec['mint'],
+            f'https://dexscreener.com/solana/{rec['mint']}?maker={wallet}',
+            f'https://photon-sol.tinyastro.io/en/lp/{rec['mint']}'
+        ])
+
+    # Auto-fit columns
+    for i, col_cells in enumerate(ws.columns, 1):
+        max_length = max(len(str(c.value)) if c.value else 0 for c in col_cells)
+        ws.column_dimensions[get_column_letter(i)].width = max_length + 2
+
+    filename = f"{wallet}_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    wb.save(filename)
+    return filename
+
+# ---------------- Bot Startup ----------------
+if __name__ == '__main__':
+    # Remove any webhook
+    from telebot import apihelper
+    apihelper.delete_webhook(token=TELEGRAM_TOKEN)
+    bot.remove_webhook()
+
+    # Start polling in a background thread
+    import threading, http.server, socketserver
+
+    def start_polling():
+        bot.infinity_polling()
+
+    polling_thread = threading.Thread(target=start_polling, daemon=True)
+    polling_thread.start()
+
+    # Simple HTTP server to bind a port for Render
+    PORT = int(os.environ.get('PORT', 5000))
+    class Handler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'OK')
+
+    with socketserver.TCPServer(('', PORT), Handler) as httpd:
+        print(f"Serving HTTP on port {PORT}")
+        httpd.serve_forever()
