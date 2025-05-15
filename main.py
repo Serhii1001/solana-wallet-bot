@@ -272,21 +272,13 @@ def generate_excel(wallet, records, summary):
 
 # ---------------- Bot Startup ----------------
 if __name__ == '__main__':
-    # Remove any webhook
     from telebot import apihelper
+    # Ensure no webhook conflicts
     apihelper.delete_webhook(token=TELEGRAM_TOKEN)
     bot.remove_webhook()
 
-    # Start polling in a background thread
-    import threading, http.server, socketserver
-
-    def start_polling():
-        bot.infinity_polling()
-
-    polling_thread = threading.Thread(target=start_polling, daemon=True)
-    polling_thread.start()
-
     # Simple HTTP server to bind a port for Render
+    import threading, http.server, socketserver
     PORT = int(os.environ.get('PORT', 5000))
     class Handler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self):
@@ -294,6 +286,13 @@ if __name__ == '__main__':
             self.end_headers()
             self.wfile.write(b'OK')
 
-    with socketserver.TCPServer(('', PORT), Handler) as httpd:
-        print(f"Serving HTTP on port {PORT}")
-        httpd.serve_forever()
+    def start_http_server():
+        with socketserver.TCPServer(('', PORT), Handler) as httpd:
+            print(f"Serving HTTP on port {PORT}")
+            httpd.serve_forever()
+
+    http_thread = threading.Thread(target=start_http_server, daemon=True)
+    http_thread.start()
+
+    # Start polling in main thread
+    bot.infinity_polling()
