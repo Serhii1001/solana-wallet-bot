@@ -5,7 +5,6 @@ from datetime import datetime
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment
 from openpyxl.utils import get_column_letter
-from flask import Flask, request
 
 # ---------------- Configuration ----------------
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
@@ -13,18 +12,14 @@ HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 SOL_PRICE_ENV = os.getenv("SOL_PRICE") or "0"
 DEXSCREENER_BASE = "https://api.dexscreener.com/latest/dex/tokens/solana/"
 COINGECKO_PRICE_URL = "https://api.coingecko.com/api/v3/simple/price"
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # e.g. https://your-domain.com
 
 if not HELIUS_API_KEY:
     raise RuntimeError("HELIUS_API_KEY env var not set. Please configure your Helius API key.")
-if not WEBHOOK_URL:
-    raise RuntimeError("WEBHOOK_URL env var must be set (e.g. https://your-domain.com)")
 
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
-app = Flask(__name__)
-WEBHOOK_PATH = f"/{TELEGRAM_TOKEN}"
 
 # ---------------- Helper Functions ----------------
+
 def safe_request(url, params=None, retries=3):
     for _ in range(retries):
         try:
@@ -164,13 +159,13 @@ def analyze_wallet(wallet, period_days=30):
                 rec['spent'] += spent_native
                 if not rec['first_ts']:
                     rec['first_ts'] = dt
-                    rec['first_mcap'] = get_historical_mcap(mint, ts*1000)
+                    rec['first_mcap'] = get_historical_mcap(mint, ts * 1000)
             else:
                 rec['sells'] += 1
                 rec['outcome'] += amount
                 rec['earned'] += earned_native
                 rec['last_ts'] = dt
-                rec['last_mcap'] = get_historical_mcap(mint, ts*1000)
+                rec['last_mcap'] = get_historical_mcap(mint, ts * 1000)
 
     for rec in records.values():
         rec['delta'] = rec['earned'] - rec['spent']
@@ -180,4 +175,36 @@ def analyze_wallet(wallet, period_days=30):
         rec['current_mcap'] = get_current_mcap(rec['mint'])
 
     total_spent = sum(r['spent'] for r in records.values())
-    total_earned = sum(r['earned'] for r in records.values())
+    total_earned = sum(r['earned'] for r in(records.values()))
+    pnl = total_earned - total_spent
+    wins = [r for r in(records.values()) if r['delta'] > 0]
+    losses = [r for r in(records.values()) if r['delta'] < 0]
+    winrate = len(wins) / max(len(records), 1) * 100
+    avg_win = sum(r['delta_pct'] for r in wins) / max(len(records), 1)
+    pnl_loss = sum(r['delta'] for r in losses)
+    balance_change = (pnl / total_spent * 100) if total_spent else 0
+
+    summary = {
+        'wallet': wallet,
+        'balance': balance,
+        'time_period': f"{period_days} days",
+        'sol_price': get_sol_price(),
+        'pnl': pnl,
+        'winrate': winrate,
+        'avg_win_pct': avg_win,
+        'pnl_loss': pnl_loss,
+        'balance_change': balance_change
+    }
+    return records, summary
+
+# ---------------- Excel Generation ----------------
+def generate_excel(wallet, records, summary):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "ArGhost table"
+    bold = Font(bold=True)
+    center = Alignment(horizontal='center', vertical='center')
+
+    # Header summary
+    ws.merge_cells('A1:D1'); ws['A1'] = 'Wallet'; ws['A1'].font = bold
+    ws.merge
