@@ -280,20 +280,20 @@ if __name__ == '__main__':
     # Simple HTTP server to bind a port for Render
     import threading, http.server, socketserver
     PORT = int(os.environ.get('PORT', 5000))
+
     class Handler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self):
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b'OK')
 
-        def start_http_server():
+    def start_http_server():
         with socketserver.TCPServer(('', PORT), Handler) as httpd:
             print(f"Serving HTTP on port {PORT}")
             httpd.serve_forever()
 
     # Start HTTP server thread
     http_thread = threading.Thread(target=start_http_server, daemon=True)
-    http_thread.start()(target=start_http_server, daemon=True)
     http_thread.start()
 
     # Start polling with conflict recovery
