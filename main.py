@@ -1,79 +1,3 @@
-import os
-import json
-import requests
-import telebot
-from datetime import datetime
-from openpyxl import Workbook
-from flask import Flask
-import threading
-
-# Configuration
-TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
-HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
-DEXSCREENER_BASE = "https://api.dexscreener.com/latest/dex/tokens/solana/"
-SOL_PRICE = os.getenv("SOL_PRICE", "0")
-
-# Telegram bot
-bot = telebot.TeleBot(TELEGRAM_TOKEN)
-
-# Flask app for health check (required by Render web service)
-app = Flask(__name__)
-
-@app.route("/")
-def health_check():
-    return "Bot is running"
-
-
-def safe_request(url, params=None):
-    for _ in range(3):
-        try:
-            resp = requests.get(url, params=params, timeout=10)
-            if resp.status_code == 200:
-                return resp.json()
-        except Exception:
-            pass
-    return {}
-
-
-def get_symbol(mint):
-    url = f"https://api.helius.xyz/v0/mints/{mint}?api-key={HELIUS_API_KEY}"
-    data = safe_request(url)
-    return data.get("symbol", mint)
-
-
-def get_historical_mcap(mint, ts_dt):
-    url = f"{DEXSCREENER_BASE}{mint}/chart?interval=1h"
-    data = safe_request(url)
-    points = data.get('chart', [])
-    if not points:
-        return ""
-    target = int(ts_dt.timestamp() * 1000)
-    best = min(points, key=lambda p: abs(p.get('timestamp', 0) - target))
-    return best.get('marketCap', "")
-
-
-def get_current_mcap(mint):
-    data = safe_request(DEXSCREENER_BASE + mint)
-    return data.get('stats', {}).get('marketCap', "")
-
-
-def format_duration(start, end):
-    if not start or not end:
-        return "-"
-    delta = end - start
-    seconds = delta.total_seconds()
-    minutes, sec = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-    days, hours = divmod(hours, 24)
-    if days:
-        return f"{int(days)}d {int(hours)}h"
-    if hours:
-        return f"{int(hours)}h {int(minutes)}m"
-    if minutes:
-        return f"{int(minutes)}m"
-    return f"{int(sec)}s"
-
-
 def analyze_wallet(wallet):
     # Fetch transactions and balances
     tx_url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100"
@@ -85,7 +9,19 @@ def analyze_wallet(wallet):
     # Process each transaction
     for tx in txs:
         ts = datetime.fromtimestamp(tx.get('timestamp', 0))
-        fee = tx.get('fee', 0) / 1e9
+        # Determine SOL spent and earned via nativeTransfers
+        sol_spent = 0.0
+        sol_earned = 0.0
+        for nt in tx.get('nativeTransfers', []):
+            lamports = nt.get('amount', 0)
+            amount_sol = lamports / 1e9
+            if nt.get('fromUserAccount') == wallet:
+                sol_spent += amount_sol
+            if nt.get('toUserAccount') == wallet:
+                sol_earned += amount_sol
+        # Process token transfers per mint
+        # Keep track per mint whether this tx had buy/sell for count consistency
+        seen = {}
         for tr in tx.get('tokenTransfers', []):
             mint = tr.get('mint')
             amount = float(tr.get('tokenAmount', 0)) / (10 ** tr.get('decimals', 0))
@@ -93,7 +29,6 @@ def analyze_wallet(wallet):
                          'sell' if tr.get('fromUserAccount') == wallet else None)
             if not direction:
                 continue
-
             rec = tokens.setdefault(mint, {
                 'mint': mint,
                 'symbol': get_symbol(mint),
@@ -112,22 +47,27 @@ def analyze_wallet(wallet):
                 'last_mcap': '',
                 'current_mcap': ''
             })
-
+            # Count buys/sells once per tx per mint
+            if seen.get((mint, direction)) is None:
+                if direction == 'buy':
+                    rec['buys'] += 1
+                    rec['spent_sol'] += sol_spent
+                else:
+                    rec['sells'] += 1
+                    rec['earned_sol'] += sol_earned
+                seen[(mint, direction)] = True
+            # Accumulate token amounts
             if direction == 'buy':
-                rec['buys'] += 1
                 rec['in_tokens'] += amount
-                rec['spent_sol'] += fee
                 if not rec['first_ts']:
                     rec['first_ts'] = ts
                     rec['first_mcap'] = get_historical_mcap(mint, ts)
             else:
-                rec['sells'] += 1
                 rec['out_tokens'] += amount
-                rec['earned_sol'] += fee
                 rec['last_ts'] = ts
                 rec['last_mcap'] = get_historical_mcap(mint, ts)
-
-            rec['fee'] += fee
+            # Always accumulate fee
+            rec['fee'] += tx.get('fee', 0) / 1e9
 
     # Final metrics
     for rec in tokens.values():
