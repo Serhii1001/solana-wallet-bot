@@ -257,4 +257,7 @@ def handle_wallet(message):
         bot.send_document(message.chat.id, f)
 
 if __name__ == "__main__":
+    # Ensure no other getUpdates listeners or webhooks are active
+    bot.remove_webhook()
+    # Start polling for Telegram messages
     bot.infinity_polling()
