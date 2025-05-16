@@ -15,6 +15,9 @@ SOL_PRICE = os.getenv("SOL_PRICE", "0")
 
 # Initialize Telegram bot and Flask app
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
+bot.remove_webhook()  # Ensure no webhook or other polling is active
+app = Flask(__name__)
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
 @app.route("/")
