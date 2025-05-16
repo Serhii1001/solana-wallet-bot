@@ -1,3 +1,77 @@
+import os
+import json
+import requests
+import telebot
+from datetime import datetime
+from openpyxl import Workbook
+from flask import Flask
+import threading
+
+# Configuration
+TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
+HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
+DEXSCREENER_BASE = "https://api.dexscreener.com/latest/dex/tokens/solana/"
+SOL_PRICE = os.getenv("SOL_PRICE", "0")
+
+# Initialize Telegram bot and Flask app
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+app = Flask(__name__)
+
+@app.route("/")
+def health_check():
+    return "Bot is running"
+
+
+def safe_request(url, params=None):
+    for _ in range(3):
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception:
+            pass
+    return {}
+
+
+def get_symbol(mint):
+    url = f"https://api.helius.xyz/v0/mints/{mint}?api-key={HELIUS_API_KEY}"
+    data = safe_request(url)
+    return data.get("symbol", mint)
+
+
+def get_historical_mcap(mint, ts_dt):
+    url = f"{DEXSCREENER_BASE}{mint}/chart?interval=1h"
+    data = safe_request(url)
+    points = data.get('chart', [])
+    if not points:
+        return ""
+    target = int(ts_dt.timestamp() * 1000)
+    best = min(points, key=lambda p: abs(p.get('timestamp', 0) - target))
+    return best.get('marketCap', "")
+
+
+def get_current_mcap(mint):
+    data = safe_request(DEXSCREENER_BASE + mint)
+    return data.get('stats', {}).get('marketCap', "")
+
+
+def format_duration(start, end):
+    if not start or not end:
+        return "-"
+    delta = end - start
+    seconds = delta.total_seconds()
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    days, hours = divmod(hours, 24)
+    if days:
+        return f"{int(days)}d {int(hours)}h"
+    if hours:
+        return f"{int(hours)}h {int(minutes)}m"
+    if minutes:
+        return f"{int(minutes)}m"
+    return f"{int(sec)}s"
+
+
 def analyze_wallet(wallet):
     # Fetch transactions and balances
     tx_url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100"
@@ -6,12 +80,9 @@ def analyze_wallet(wallet):
     balance = bal.get('nativeBalance', 0) / 1e9
 
     tokens = {}
-    # Process each transaction
     for tx in txs:
         ts = datetime.fromtimestamp(tx.get('timestamp', 0))
-        # Determine SOL spent and earned via nativeTransfers
-        sol_spent = 0.0
-        sol_earned = 0.0
+        sol_spent = sol_earned = 0.0
         for nt in tx.get('nativeTransfers', []):
             lamports = nt.get('amount', 0)
             amount_sol = lamports / 1e9
@@ -19,13 +90,11 @@ def analyze_wallet(wallet):
                 sol_spent += amount_sol
             if nt.get('toUserAccount') == wallet:
                 sol_earned += amount_sol
-        # Process token transfers per mint
-        # Keep track per mint whether this tx had buy/sell for count consistency
         seen = {}
         for tr in tx.get('tokenTransfers', []):
             mint = tr.get('mint')
             amount = float(tr.get('tokenAmount', 0)) / (10 ** tr.get('decimals', 0))
-            direction = ('buy' if tr.get('toUserAccount') == wallet else 
+            direction = ('buy' if tr.get('toUserAccount') == wallet else
                          'sell' if tr.get('fromUserAccount') == wallet else None)
             if not direction:
                 continue
@@ -47,7 +116,6 @@ def analyze_wallet(wallet):
                 'last_mcap': '',
                 'current_mcap': ''
             })
-            # Count buys/sells once per tx per mint
             if seen.get((mint, direction)) is None:
                 if direction == 'buy':
                     rec['buys'] += 1
@@ -56,7 +124,6 @@ def analyze_wallet(wallet):
                     rec['sells'] += 1
                     rec['earned_sol'] += sol_earned
                 seen[(mint, direction)] = True
-            # Accumulate token amounts
             if direction == 'buy':
                 rec['in_tokens'] += amount
                 if not rec['first_ts']:
@@ -66,10 +133,8 @@ def analyze_wallet(wallet):
                 rec['out_tokens'] += amount
                 rec['last_ts'] = ts
                 rec['last_mcap'] = get_historical_mcap(mint, ts)
-            # Always accumulate fee
             rec['fee'] += tx.get('fee', 0) / 1e9
 
-    # Final metrics
     for rec in tokens.values():
         rec['delta_sol'] = rec['earned_sol'] - rec['spent_sol']
         rec['delta_pct'] = (rec['delta_sol'] / rec['spent_sol'] * 100
@@ -101,81 +166,52 @@ def generate_excel(wallet, tokens, summary):
     wb = Workbook()
     ws = wb.active
     ws.title = "ArGhost table"
-
-    # Summary header
-    headers = [
-        'Wallet', 'WinRate', 'PnL R', 'Avg Win %', 'PnL Loss',
-        'Balance change', 'TimePeriod', 'SOL Price Now', 'Balance'
-    ]
-    for col, title in enumerate(headers, start=1):
-        ws.cell(row=1, column=col, value=title)
-    values = [
-        wallet,
-        f"{summary['winrate']:.2f}%",
-        f"{summary['pnl']:.2f} SOL",
-        f"{summary['avg_win_pct']:.2f}%",
-        f"{summary['pnl_loss']:.2f} SOL",
-        f"{summary['balance_change']:.2f}%",
-        summary['time_period'],
-        f"{summary['sol_price']} $",
-        f"{summary['balance']:.2f} SOL"
-    ]
-    for col, val in enumerate(values, start=1):
-        ws.cell(row=2, column=col, value=val)
-
-    # Entry MCAP ranges
+    headers = ['Wallet', 'WinRate', 'PnL R', 'Avg Win %', 'PnL Loss',
+               'Balance change', 'TimePeriod', 'SOL Price Now', 'Balance']
+    for col, title in enumerate(headers, start=1): ws.cell(row=1, column=col, value=title)
+    vals = [wallet,
+            f"{summary['winrate']:.2f}%",
+            f"{summary['pnl']:.2f} SOL",
+            f"{summary['avg_win_pct']:.2f}%",
+            f"{summary['pnl_loss']:.2f} SOL",
+            f"{summary['balance_change']:.2f}%",
+            summary['time_period'],
+            f"{summary['sol_price']} $",
+            f"{summary['balance']:.2f} SOL"]
+    for col, val in enumerate(vals, start=1): ws.cell(row=2, column=col, value=val)
     ws.cell(row=4, column=1, value='Tokens entry MCAP:')
-    ranges = ['<5k', '5k-30k', '30k-100k', '100k-300k', '300k+']
-    for idx, rng in enumerate(ranges, start=2):
-        ws.cell(row=5, column=idx, value=rng)
-
-    # Table headers
-    cols = [
-        'Token', 'Spent SOL', 'Earned SOL', 'Delta Sol', 'Delta %', 'Buys',
-        'Sells', 'Last trade', 'Income', 'Outcome', 'Fee', 'Period',
-        'First buy Mcap', 'Last tx Mcap', 'Current Mcap', 'Contract',
-        'Dexscreener', 'Photon'
-    ]
-    header_row = 8
-    for col, title in enumerate(cols, start=1):
-        ws.cell(row=header_row, column=col, value=title)
-
-    # Fill table
+    for idx, rng in enumerate(['<5k','5k-30k','30k-100k','100k-300k','300k+'], start=2): ws.cell(row=5, column=idx, value=rng)
+    cols = ['Token','Spent SOL','Earned SOL','Delta Sol','Delta %','Buys',
+            'Sells','Last trade','Income','Outcome','Fee','Period',
+            'First buy Mcap','Last tx Mcap','Current Mcap','Contract',
+            'Dexscreener','Photon']
+    for col, title in enumerate(cols, start=1): ws.cell(row=8, column=col, value=title)
     row = 9
     for rec in tokens.values():
-        ws.cell(row=row, column=1, value=rec['symbol'])
-        ws.cell(row=row, column=2, value=f"{rec['spent_sol']:.2f} SOL")
-        ws.cell(row=row, column=3, value=f"{rec['earned_sol']:.2f} SOL")
-        ws.cell(row=row, column=4, value=f"{rec['delta_sol']:.2f}")
-        ws.cell(row=row, column=5, value=f"{rec['delta_pct']:.2f}%")
-        ws.cell(row=row, column=6, value=rec['buys'])
-        ws.cell(row=row, column=7, value=rec['sells'])
-        if rec['last_trade']:
-            ws.cell(row=row, column=8, value=rec['last_trade'].strftime('%d.%m.%Y'))
-        ws.cell(row=row, column=9, value=rec['in_tokens'])
-        ws.cell(row=row, column=10, value=rec['out_tokens'])
-        ws.cell(row=row, column=11, value=f"{rec['fee']:.2f}")
-        ws.cell(row=row, column=12, value=rec['period'])
-        ws.cell(row=row, column=13, value=rec['first_mcap'])
-        ws.cell(row=row, column=14, value=rec['last_mcap'])
-        ws.cell(row=row, column=15, value=rec['current_mcap'])
-        ws.cell(row=row, column=16, value=rec['mint'])
-        cell_dex = ws.cell(row=row, column=17)
-        cell_dex.value = 'View trades'
-        cell_dex.hyperlink = f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}"
-        cell_photo = ws.cell(row=row, column=18)
-        cell_photo.value = 'View trades'
-        cell_photo.hyperlink = f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"
+        ws.cell(row=row, column=1, value=rec['symbol']);
+        ws.cell(row=row, column=2, value=f"{rec['spent_sol']:.2f} SOL");
+        ws.cell(row=row, column=3, value=f"{rec['earned_sol']:.2f} SOL");
+        ws.cell(row=row, column=4, value=f"{rec['delta_sol']:.2f}");
+        ws.cell(row=row, column=5, value=f"{rec['delta_pct']:.2f}%");
+        ws.cell(row=row, column=6, value=rec['buys']);
+        ws.cell(row=row, column=7, value=rec['sells']);
+        if rec['last_trade']: ws.cell(row=row, column=8, value=rec['last_trade'].strftime('%d.%m.%Y'))
+        ws.cell(row=row, column=9, value=rec['in_tokens']);
+        ws.cell(row=row, column=10, value=rec['out_tokens']);
+        ws.cell(row=row, column=11, value=f"{rec['fee']:.2f}");
+        ws.cell(row=row, column=12, value=rec['period']);
+        ws.cell(row=row, column=13, value=rec['first_mcap']);
+        ws.cell(row=row, column=14, value=rec['last_mcap']);
+        ws.cell(row=row, column=15, value=rec['current_mcap']);
+        ws.cell(row=row, column=16, value=rec['mint']);
+        cd = ws.cell(row=row, column=17); cd.value='View trades'; cd.hyperlink=f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}"
+        cp = ws.cell(row=row, column=18); cp.value='View trades'; cp.hyperlink=f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"
         row += 1
-
     wb.save(filename)
     return filename
 
-
 @bot.message_handler(commands=['start'])
-def welcome(message):
-    bot.reply_to(message, "Привет! Отправь Solana-адрес.")
-
+def welcome(message): bot.reply_to(message, "Привет! Отправь Solana-адрес.")
 
 @bot.message_handler(func=lambda m: True)
 def handle_wallet(message):
@@ -183,14 +219,9 @@ def handle_wallet(message):
     bot.reply_to(message, "Обрабатываю...")
     tokens, summary = analyze_wallet(wallet)
     fname = generate_excel(wallet, tokens, summary)
-    with open(fname, "rb") as f:
-        bot.send_document(message.chat.id, f)
-
+    with open(fname, "rb") as f: bot.send_document(message.chat.id, f)
 
 if __name__ == "__main__":
-    # Start bot polling in a separate thread
-    polling_thread = threading.Thread(target=bot.infinity_polling, daemon=True)
-    polling_thread.start()
-    # Run Flask app to bind to required port
+    threading.Thread(target=bot.infinity_polling, daemon=True).start()
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
