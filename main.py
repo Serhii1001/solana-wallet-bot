@@ -4,6 +4,8 @@ import requests
 import telebot
 from datetime import datetime
 from openpyxl import Workbook
+from flask import Flask
+import threading
 
 # Configuration
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
@@ -11,7 +13,15 @@ HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
 DEXSCREENER_BASE = "https://api.dexscreener.com/latest/dex/tokens/solana/"
 SOL_PRICE = os.getenv("SOL_PRICE", "0")
 
+# Telegram bot
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
+
+# Flask app for health check (required by Render web service)
+app = Flask(__name__)
+
+@app.route("/")
+def health_check():
+    return "Bot is running"
 
 
 def safe_request(url, params=None):
@@ -147,7 +157,6 @@ def analyze_wallet(wallet):
 
 
 def generate_excel(wallet, tokens, summary):
-    # Prepare filename
     filename = f"{wallet}_report.xlsx"
     wb = Workbook()
     ws = wb.active
@@ -201,10 +210,8 @@ def generate_excel(wallet, tokens, summary):
         ws.cell(row=row, column=5, value=f"{rec['delta_pct']:.2f}%")
         ws.cell(row=row, column=6, value=rec['buys'])
         ws.cell(row=row, column=7, value=rec['sells'])
-        # Last trade date
         if rec['last_trade']:
             ws.cell(row=row, column=8, value=rec['last_trade'].strftime('%d.%m.%Y'))
-        # Token amounts
         ws.cell(row=row, column=9, value=rec['in_tokens'])
         ws.cell(row=row, column=10, value=rec['out_tokens'])
         ws.cell(row=row, column=11, value=f"{rec['fee']:.2f}")
@@ -213,7 +220,6 @@ def generate_excel(wallet, tokens, summary):
         ws.cell(row=row, column=14, value=rec['last_mcap'])
         ws.cell(row=row, column=15, value=rec['current_mcap'])
         ws.cell(row=row, column=16, value=rec['mint'])
-        # Hyperlinks
         cell_dex = ws.cell(row=row, column=17)
         cell_dex.value = 'View trades'
         cell_dex.hyperlink = f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}"
@@ -242,5 +248,9 @@ def handle_wallet(message):
 
 
 if __name__ == "__main__":
-    bot.remove_webhook()
-    bot.infinity_polling()
+    # Start bot polling in a separate thread
+    polling_thread = threading.Thread(target=bot.infinity_polling, daemon=True)
+    polling_thread.start()
+    # Run Flask app to bind to required port
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
