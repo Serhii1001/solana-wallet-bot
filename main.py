@@ -86,24 +86,44 @@ def analyze_wallet(wallet):
             "current_mcap": ""
         }
         data = safe_request(f"{DEXSCREENER_BASE}trades/solana/{mint}?maker={wallet}")
-        for t in data.get("trades", []):
-            side = t.get("side")  # "buy" or "sell"
-            ts = datetime.fromtimestamp(t.get("timestamp", 0) / 1000)
-            amt_token = float(t.get("amount", 0))
-            amt_sol = float(t.get("amountQuote", 0)) / 1e9
-            if side == "buy":
-                rec["buys"] += 1
-                rec["spent_sol"] += amt_sol
-                rec["in_tokens"] += amt_token
-                if rec["first_ts"] is None or ts < rec["first_ts"]:
-                    rec["first_ts"] = ts
-            else:
-                rec["sells"] += 1
-                rec["earned_sol"] += amt_sol
-                rec["out_tokens"] += amt_token
-                if rec["last_ts"] is None or ts > rec["last_ts"]:
-                    rec["last_ts"] = ts
-        # Compute PnL, percentages, durations
+        trades = data.get("trades", [])
+        if trades:
+            for t in trades:
+                side = t.get("side")
+                ts = datetime.fromtimestamp(t.get("timestamp", 0) / 1000)
+                amt_token = float(t.get("amount", 0))
+                amt_sol = float(t.get("amountQuote", 0)) / 1e9
+                if side == "buy":
+                    rec["buys"] += 1
+                    rec["spent_sol"] += amt_sol
+                    rec["in_tokens"] += amt_token
+                    if rec["first_ts"] is None or ts < rec["first_ts"]:
+                        rec["first_ts"] = ts
+                else:
+                    rec["sells"] += 1
+                    rec["earned_sol"] += amt_sol
+                    rec["out_tokens"] += amt_token
+                    if rec["last_ts"] is None or ts > rec["last_ts"]:
+                        rec["last_ts"] = ts
+        else:
+            # Fallback: scan Helius tokenTransfers if no Dex trades
+            for tx in txs:
+                for tr in tx.get("tokenTransfers", []):
+                    if tr.get("mint") != mint:
+                        continue
+                    ts = datetime.fromtimestamp(tx.get("timestamp", 0))
+                    amount = float(tr.get("tokenAmount", 0)) / (10**tr.get("decimals", 0))
+                    if tr.get("toUserAccount") == wallet:
+                        rec["buys"] += 1
+                        rec["in_tokens"] += amount
+                        if rec["first_ts"] is None or ts < rec["first_ts"]:
+                            rec["first_ts"] = ts
+                    if tr.get("fromUserAccount") == wallet:
+                        rec["sells"] += 1
+                        rec["out_tokens"] += amount
+                        if rec["last_ts"] is None or ts > rec["last_ts"]:
+                            rec["last_ts"] = ts
+        # Compute PnL
         rec["delta_sol"] = rec["earned_sol"] - rec["spent_sol"]
         rec["delta_pct"] = (rec["delta_sol"] / rec["spent_sol"] * 100) if rec["spent_sol"] else 0
         rec["period"] = format_duration(rec["first_ts"], rec["last_ts"])
