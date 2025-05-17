@@ -121,6 +121,14 @@ def analyze_wallet(wallet):
             if not direction:
                 continue
 
+            # Учитываем wSOL как native SOL, если встречается в tokenTransfers
+            if mint == 'So11111111111111111111111111111111111111112':
+                if direction == 'buy':
+                    native_spent += amt
+                else:
+                    native_earned += amt
+                continue
+
             rec = tokens.setdefault(mint, {
                 'mint': mint,
                 'symbol': get_symbol(mint),
@@ -175,7 +183,7 @@ def analyze_wallet(wallet):
         'avg_win_pct': sum(r['delta_pct'] for r in tokens.values() if r['delta_sol'] > 0) / max(1, sum(1 for r in tokens.values() if r['delta_sol'] > 0)),
         'pnl_loss': sum(r['delta_sol'] for r in tokens.values() if r['delta_sol'] < 0),
         'balance_change': (sum(r['delta_sol'] for r in tokens.values()) / ((balance - sum(r['delta_sol'] for r in tokens.values())) or 1) * 100),
-        'winrate': sum(1 for r in tokens.values() if r['delta_sol'] > 0) / max(1, sum(1 for r in tokens.values() if abs(r['delta_sol']) > 0)) * 100,
+        'winrate': sum(1 for r in tokens.values() if r['delta_sol'] > 0) / max(1, sum(1 for r in.tokens.values() if abs(r['delta_sol']) > 0)) * 100,
         'time_period': '30 days',
         'sol_price': SOL_PRICE
     }
