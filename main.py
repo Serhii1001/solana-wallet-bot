@@ -163,33 +163,70 @@ def analyze_wallet(wallet):
     }
     return tokens, summary
 
-# Generate Excel report(wallet, tokens, summary):
-    fn = f"{wallet}_report.xlsx"; wb = Workbook(); ws = wb.active; ws.title = "ArGhost table"
+# Generate Excel report
+
+def generate_excel(wallet, tokens, summary):
+    fn = f"{wallet}_report.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "ArGhost table"
+
     hdr = ['Wallet','WinRate','PnL R','Avg Win %','PnL Loss','Balance change','TimePeriod','SOL Price Now','Balance']
-    for i,t in enumerate(hdr,1): ws.cell(1,i,t)
-    vals = [wallet, f"{summary['winrate']:.2f}%", f"{summary['pnl']:.2f} SOL", f"{summary['avg_win_pct']:.2f}%", f"{summary['pnl_loss']:.2f} SOL", f"{summary['balance_change']:.2f}%", summary['time_period'], f"{summary['sol_price']} $", f"{summary['balance']:.2f} SOL"]
-    for i,v in enumerate(vals,1): ws.cell(2,i,v)
-    ws.cell(4,1,'Tokens entry MCAP:'); ranges=['<5k','5k-30k','30k-100k','100k-300k','300k+']
-    for i,r in enumerate(ranges,2): ws.cell(5,i,r)
+    for i, t in enumerate(hdr, 1):
+        ws.cell(row=1, column=i, value=t)
+
+    vals = [
+        wallet,
+        f"{summary['winrate']:.2f}%",
+        f"{summary['pnl']:.2f} SOL",
+        f"{summary['avg_win_pct']:.2f}%",
+        f"{summary['pnl_loss']:.2f} SOL",
+        f"{summary['balance_change']:.2f}%",
+        summary['time_period'],
+        f"{summary['sol_price']} $",
+        f"{summary['balance']:.2f} SOL"
+    ]
+    for i, v in enumerate(vals, 1):
+        ws.cell(row=2, column=i, value=v)
+
+    ws.cell(row=4, column=1, value='Tokens entry MCAP:')
+    ranges = ['<5k','5k-30k','30k-100k','100k-300k','300k+']
+    for i, r in enumerate(ranges, 2):
+        ws.cell(row=5, column=i, value=r)
+
     cols = ['Token','Spent SOL','Earned SOL','Delta Sol','Delta %','Buys','Sells','Last trade','Income','Outcome','Fee','Period','First buy Mcap','Last tx Mcap','Current Mcap','Contract','Dexscreener','Photon']
-    for i,c in enumerate(cols,1): ws.cell(8,i,c)
-    r=9
+    for i, c in enumerate(cols, 1):
+        ws.cell(row=8, column=i, value=c)
+
+    row = 9
     for rec in tokens.values():
-        ws.cell(r,1,rec['symbol']); ws.cell(r,2,f"{rec['spent_sol']:.2f} SOL"); ws.cell(r,3,f"{rec['earned_sol']:.2f} SOL"); ws.cell(r,4,f"{rec['delta_sol']:.2f}"); ws.cell(r,5,f"{rec['delta_pct']:.2f}%"); ws.cell(r,6,rec['buys']); ws.cell(r,7,rec['sells']);
-        if rec['last_trade']: ws.cell(r,8,rec['last_trade'].strftime('%d.%m.%Y'))
-        ws.cell(r,9,rec['in_tokens']); ws.cell(r,10,rec['out_tokens']); ws.cell(r,11,f"{rec['fee']:.2f}"); ws.cell(r,12,rec['period']); ws.cell(r,13,rec['first_mcap']); ws.cell(r,14,rec['last_mcap']); ws.cell(r,15,rec['current_mcap']); ws.cell(r,16,rec['mint']);
-        d=ws.cell(r,17); d.value='View trades'; d.hyperlink=f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}"; p=ws.cell(r,18); p.value='View trades'; p.hyperlink=f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"
-        r+=1
-    wb.save(fn); return fn
+        ws.cell(row=row, column=1, value=rec['symbol'])
+        ws.cell(row=row, column=2, value=f"{rec['spent_sol']:.2f} SOL")
+        ws.cell(row=row, column=3, value=f"{rec['earned_sol']:.2f} SOL")
+        ws.cell(row=row, column=4, value=f"{rec['delta_sol']:.2f}")
+        ws.cell(row=row, column=5, value=f"{rec['delta_pct']:.2f}%")
+        ws.cell(row=row, column=6, value=rec['buys'])
+        ws.cell(row=row, column=7, value=rec['sells'])
+        if rec['last_trade']:
+            ws.cell(row=row, column=8, value=rec['last_trade'].strftime('%d.%m.%Y'))
+        ws.cell(row=row, column=9, value=rec['in_tokens'])
+        ws.cell(row=row, column=10, value=rec['out_tokens'])
+        ws.cell(row=row, column=11, value=f"{rec['fee']:.2f}")
+        ws.cell(row=row, column=12, value=rec['period'])
+        ws.cell(row=row, column=13, value=rec['first_mcap'])
+        ws.cell(row=row, column=14, value=rec['last_mcap'])
+        ws.cell(row=row, column=15, value=rec['current_mcap'])
+        ws.cell(row=row, column=16, value=rec['mint'])
 
-# Handlers
+        cell_dex = ws.cell(row=row, column=17)
+        cell_dex.value = 'View trades'
+        cell_dex.hyperlink = f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}"
 
-def welcome(m): bot.reply_to(m,"Привет! Отправь Solana-адрес.")
-bot.register_message_handler(welcome, commands=['start'])
+        cell_ph = ws.cell(row=row, column=18)
+        cell_ph.value = 'View trades'
+        cell_ph.hyperlink = f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"
 
-def handle(m): wallet=m.text.strip(); bot.reply_to(m,"Обрабатываю..."); tokens,summary=analyze_wallet(wallet); f=generate_excel(wallet,tokens,summary); bot.send_document(m.chat.id, open(f,'rb'))
-bot.register_message_handler(handle, func=lambda _: True)
+        row += 1
 
-# Run app
-def main(): app.run(host='0.0.0.0', port=int(os.environ.get('PORT',5000)))
-if __name__=='__main__': main()
+    wb.save(fn)
+    return fn
