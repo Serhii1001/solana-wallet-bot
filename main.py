@@ -12,7 +12,10 @@ HELIUS_API_KEY = os.getenv('HELIUS_API_KEY')  # Helius API Key
 if not BOT_TOKEN or not HELIUS_API_KEY:
     raise ValueError("Please set BOT_TOKEN and HELIUS_API_KEY environment variables.")
 
+# Initialize bot and remove any existing webhook to enable polling
 bot = telebot.TeleBot(BOT_TOKEN)
+bot.delete_webhook()
+time.sleep(1)
 
 # Constants
 HELIUS_URL = "https://api.helius.xyz/v0/enhancedTransactions"
