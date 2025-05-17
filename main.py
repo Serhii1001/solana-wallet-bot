@@ -84,6 +84,12 @@ def analyze_wallet(wallet):
     tokens = {}
 
     for tx in txs:
+            # ===== DEBUG LOGGING START =====
+        print("----- NEW TX -----")
+        print("Signature:", tx.get("signature"))
+        print("NativeTransfers:", tx.get("nativeTransfers"))
+        print("TokenTransfers:", tx.get("tokenTransfers"))
+    # ===== DEBUG LOGGING END =====
         ts = datetime.fromtimestamp(tx.get('timestamp', 0))
 
         # 1) Общее списание и зачисление SOL в транзакции
