@@ -8,47 +8,39 @@ from openpyxl import Workbook
 # Configuration
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
 HELIUS_API_KEY   = os.getenv("HELIUS_API_KEY")
-WEBHOOK_URL      = os.getenv("WEBHOOK_URL")
+WEBHOOK_URL      = os.getenv("WEBHOOK_URL")  # https://your-app.onrender.com
 DEXSCREENER_BASE = "https://api.dexscreener.com/latest/dex/"
 SOL_PRICE        = os.getenv("SOL_PRICE", "0")
 
-# Initialize bot and app
+# Initialize bot and Flask app
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# Remove any old webhook and set new one
+# Remove webhook if exists and set new one
 bot.delete_webhook()
 bot.set_webhook(f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}")
 
-# Helper for HTTP requests
+# Helper to make HTTP GET requests with retries
 def safe_request(url, params=None):
     for _ in range(3):
         try:
-            r = requests.get(url, params=params, timeout=10)
-            if r.status_code == 200:
-                return r.json()
-        except:
-            pass
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception:
+            continue
     return {}
 
-# Data helpers
+# Helpers to fetch data
+
 def get_symbol(mint):
-    return safe_request(f"https://api.helius.xyz/v0/mints/{mint}?api-key={HELIUS_API_KEY}").get('symbol', mint)
+    data = safe_request(f"https://api.helius.xyz/v0/mints/{mint}?api-key={HELIUS_API_KEY}")
+    return data.get("symbol", mint)
 
-def get_historical_mcap(mint, ts):
-    pts = safe_request(f"{DEXSCREENER_BASE}tokens/solana/{mint}/chart?interval=1h").get('chart', [])
-    if not pts:
-        return ''
-    target = int(ts.timestamp() * 1000)
-    best = min(pts, key=lambda p: abs(p.get('timestamp', 0) - target))
-    return best.get('marketCap', '')
-
-def get_current_mcap(mint):
-    return safe_request(f"{DEXSCREENER_BASE}tokens/solana/{mint}").get('stats', {}).get('marketCap', '')
 
 def format_duration(start, end):
     if not start or not end:
-        return '-'
+        return "-"
     delta = end - start
     days, rem = divmod(delta.total_seconds(), 86400)
     hours, rem = divmod(rem, 3600)
@@ -61,106 +53,129 @@ def format_duration(start, end):
         return f"{int(minutes)}m"
     return f"{int(seconds)}s"
 
-# Core processing
+# Analyze wallet trades using Dexscreener trades endpoint
 def analyze_wallet(wallet):
+    # Get native balance
     bal = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/balances?api-key={HELIUS_API_KEY}")
-    balance = bal.get('nativeBalance', 0) / 1e9
-    txs = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100" ) or []
-    mints = set(tr['mint'] for tx in txs for tr in tx.get('tokenTransfers', [])
-                if tr.get('mint') and (tr.get('toUserAccount')==wallet or tr.get('fromUserAccount')==wallet))
+    balance = bal.get("nativeBalance", 0) / 1e9
+
+    # Fetch recent transactions to gather token mints
+    txs = safe_request(
+        f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100"
+    ) or []
+    mints = {tr["mint"] for tx in txs for tr in tx.get("tokenTransfers", [])
+             if tr.get("mint") and (tr.get("toUserAccount") == wallet or tr.get("fromUserAccount") == wallet)}
+
     tokens = {}
+    # For each mint, fetch trades from Dexscreener
     for mint in mints:
-        wb.save(filename)
-    return filename
-                   buys=0, sells=0, in_tokens=0, out_tokens=0,
-                   first_ts=None, last_ts=None, first_mcap='', last_mcap='', current_mcap='')
-        trades = safe_request(f"{DEXSCREENER_BASE}trades/solana/{mint}?maker={wallet}").get('trades', [])
-        for t in trades:
-            side = t.get('side'); ts = datetime.fromtimestamp(t.get('timestamp',0)/1000)
-            amt_tok = float(t.get('amount', 0)); amt_sol = float(t.get('amountQuote', 0)) / 1e9
-            if side == 'buy':
-                rec['buys'] += 1
-                rec['spent_sol'] += amt_sol
-                rec['in_tokens'] += amt_tok
-                if rec['first_ts'] is None or ts < rec['first_ts']:
-                    rec['first_ts'] = ts
-                    rec['first_mcap'] = get_historical_mcap(mint, ts)
+        rec = {
+            "mint": mint,
+            "symbol": get_symbol(mint),
+            "spent_sol": 0,
+            "earned_sol": 0,
+            "buys": 0,
+            "sells": 0,
+            "in_tokens": 0,
+            "out_tokens": 0,
+            "fee": 0,
+            "first_ts": None,
+            "last_ts": None,
+            "first_mcap": "",
+            "last_mcap": "",
+            "current_mcap": ""
+        }
+        data = safe_request(f"{DEXSCREENER_BASE}trades/solana/{mint}?maker={wallet}")
+        for t in data.get("trades", []):
+            side = t.get("side")  # "buy" or "sell"
+            ts = datetime.fromtimestamp(t.get("timestamp", 0) / 1000)
+            amt_token = float(t.get("amount", 0))
+            amt_sol = float(t.get("amountQuote", 0)) / 1e9
+            if side == "buy":
+                rec["buys"] += 1
+                rec["spent_sol"] += amt_sol
+                rec["in_tokens"] += amt_token
+                if rec["first_ts"] is None or ts < rec["first_ts"]:
+                    rec["first_ts"] = ts
             else:
-                rec['sells'] += 1
-                rec['earned_sol'] += amt_sol
-                rec['out_tokens'] += amt_tok
-                if rec['last_ts'] is None or ts > rec['last_ts']:
-                    rec['last_ts'] = ts
-                    rec['last_mcap'] = get_historical_mcap(mint, ts)
-        rec['current_mcap'] = get_current_mcap(mint)
-        rec['delta_sol'] = rec['earned_sol'] - rec['spent_sol']
-        rec['delta_pct'] = (rec['delta_sol'] / rec['spent_sol'] * 100) if rec['spent_sol'] else 0
-        rec['period'] = format_duration(rec['first_ts'], rec['last_ts'])
-        rec['last_trade'] = rec['last_ts'] or rec['first_ts']
+                rec["sells"] += 1
+                rec["earned_sol"] += amt_sol
+                rec["out_tokens"] += amt_token
+                if rec["last_ts"] is None or ts > rec["last_ts"]:
+                    rec["last_ts"] = ts
+        # Compute PnL, percentages, durations
+        rec["delta_sol"] = rec["earned_sol"] - rec["spent_sol"]
+        rec["delta_pct"] = (rec["delta_sol"] / rec["spent_sol"] * 100) if rec["spent_sol"] else 0
+        rec["period"] = format_duration(rec["first_ts"], rec["last_ts"])
+        rec["last_trade"] = rec["last_ts"] or rec["first_ts"]
         tokens[mint] = rec
-    summary = dict(
-        wallet=wallet, balance=balance,
-        pnl=sum(r['delta_sol'] for r in tokens.values()),
-        avg_win_pct=sum(r['delta_pct'] for r in tokens.values() if r['delta_sol']>0)
-                    / max(1, sum(1 for r in tokens.values() if r['delta_sol']>0)),
-        pnl_loss=sum(r['delta_sol'] for r in tokens.values() if r['delta_sol']<0),
-        balance_change=sum(r['delta_sol'] for r in tokens.values())
-                       / ((balance - sum(r['delta_sol'] for r in tokens.values())) or 1) * 100,
-        winrate=sum(1 for r in tokens.values() if r['delta_sol']>0)
-                / max(1, sum(1 for r in tokens.values() if abs(r['delta_sol'])>0)) * 100,
-        time_period='30 days', sol_price=SOL_PRICE
-    )
+
+    summary = {
+        "wallet": wallet,
+        "balance": balance,
+        "pnl": sum(r["delta_sol"] for r in tokens.values()),
+        "avg_win_pct": sum(r["delta_pct"] for r in tokens.values() if r["delta_sol"] > 0)
+                        / max(1, sum(1 for r in tokens.values() if r["delta_sol"] > 0)),
+        "pnl_loss": sum(r["delta_sol"] for r in tokens.values() if r["delta_sol"] < 0),
+        "balance_change": sum(r["delta_sol"] for r in tokens.values())
+                           / max(1, balance) * 100,
+        "winrate": sum(1 for r in tokens.values() if r["delta_sol"] > 0)
+                    / max(1, len(tokens)) * 100,
+        "time_period": "30 days",
+        "sol_price": SOL_PRICE
+    }
     return tokens, summary
 
-# Excel report generator
+# Generate Excel report
 def generate_excel(wallet, tokens, summary):
     filename = f"{wallet}_report.xlsx"
-    wb = Workbook(); ws = wb.active; ws.title = "ArGhost table"
-    headers = ['Wallet','WinRate','PnL R','Avg Win %','PnL Loss','Balance change','TimePeriod','SOL Price Now','Balance']
-    for col, h in enumerate(headers, 1): ws.cell(row=1, column=col, value=h)
-    vals = [wallet, f"{summary['winrate']:.2f}%", f"{summary['pnl']:.2f} SOL",
-            f"{summary['avg_win_pct']:.2f}%", f"{summary['pnl_loss']:.2f} SOL",
-            f"{summary['balance_change']:.2f}%", summary['time_period'],
-            f"{summary['sol_price']} $", f"{summary['balance']:.2f} SOL"]
-    for col, v in enumerate(vals, 1): ws.cell(row=2, column=col, value=v)
-    ws.cell(row=4, column=1, value='Tokens entry MCAP:')
-    for idx, r in enumerate(['<5k','5k-30k','30k-100k','100k-300k','300k+'], 2): ws.cell(row=5, column=idx, value=r)
-    cols = ['Token','Spent SOL','Earned SOL','Delta Sol','Delta %','Buys','Sells','Last trade','Income','Outcome','Fee','Period','First buy Mcap','Last tx Mcap','Current Mcap','Contract','Dexscreener','Photon']
-    for col, c in enumerate(cols,1): ws.cell(row=8, column=col, value=c)
-    row = 9
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Wallet Report"
+
+    # Summary row
+    headers = ["Wallet", "WinRate", "PnL", "Avg Win %", "PnL Loss", "Balance change %", "Period", "SOL Price", "Balance"]
+    ws.append(headers)
+    ws.append([
+        wallet,
+        f"{summary['winrate']:.2f}%",
+        f"{summary['pnl']:.4f}",
+        f"{summary['avg_win_pct']:.2f}%",
+        f"{summary['pnl_loss']:.4f}",
+        f"{summary['balance_change']:.2f}%",
+        summary['time_period'],
+        summary['sol_price'],
+        f"{summary['balance']:.4f}"
+    ])
+
+    # Token details header
+    ws.append([])
+    detail_headers = [
+        "Token", "Spent SOL", "Earned SOL", "Delta SOL", "%", "Buys", "Sells", "In", "Out", "Period", "Last trade"
+    ]
+    ws.append(detail_headers)
+
     for rec in tokens.values():
-        # Place symbol in first column
-        ws.cell(row=row, column=1, value=rec['symbol'])
-        ws.cell(row, 2, value=f"{rec['spent_sol']:.2f} SOL")
-        ws.cell(row, 3, value=f"{rec['earned_sol']:.2f} SOL")
-        ws.cell(row, 4, value=f"{rec['delta_sol']:.2f}")
-        ws.cell(row, 5, value=f"{rec['delta_pct']:.2f}%")
-        ws.cell(row, 6, value=rec['buys'])
-        ws.cell(row, 7, value=rec['sells'])
-        if rec['last_trade']:
-            ws.cell(row, 8, value=rec['last_trade'].strftime('%d.%m.%Y'))
-        ws.cell(row, 9, value=rec['in_tokens'])
-        ws.cell(row, 10, value=rec['out_tokens'])
-        ws.cell(row, 11, value=f"{rec['fee']:.2f}")
-        ws.cell(row, 12, value=rec['period'])
-        ws.cell(row, 13, value=rec['first_mcap'])
-        ws.cell(row, 14, value=rec['last_mcap'])
-        ws.cell(row, 15, value=rec['current_mcap'])
-        ws.cell(row, 16, value=rec['mint'])
-        d_cell = ws.cell(row, 17)
-        d_cell.value = 'View trades'
-        d_cell.hyperlink = f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}"
-        p_cell = ws.cell(row, 18)
-        p_cell.value = 'View trades'
-        p_cell.hyperlink = f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"
-        row += 1
+        ws.append([
+            rec['symbol'],
+            f"{rec['spent_sol']:.4f}",
+            f"{rec['earned_sol']:.4f}",
+            f"{rec['delta_sol']:.4f}",
+            f"{rec['delta_pct']:.2f}%",
+            rec['buys'],
+            rec['sells'],
+            rec['in_tokens'],
+            rec['out_tokens'],
+            rec['period'],
+            rec['last_trade'].strftime('%d.%m.%Y') if rec['last_trade'] else ''
+        ])
+
     wb.save(filename)
-    return filename
     return filename
 
 # Flask routes
 @app.route('/', methods=['GET'])
-def health():
+def health_check():
     return 'OK', 200
 
 @app.route(f"/{TELEGRAM_TOKEN}", methods=['POST'])
@@ -171,17 +186,18 @@ def webhook():
 
 # Telegram handlers
 @bot.message_handler(commands=['start'])
-def cmd_start(msg):
-    bot.reply_to(msg, 'Привет! Отправь Solana-адрес.')
+def start_cmd(message):
+    bot.reply_to(message, "Привет! Отправь мне Solana-адрес, и я пришлю отчёт.")
 
 @bot.message_handler(func=lambda m: True)
-def handle_wallet(msg):
-    bot.reply_to(msg, 'Обрабатываю...')
-    tokens, summary = analyze_wallet(msg.text.strip())
-    fn = generate_excel(msg.text.strip(), tokens, summary)
-    with open(fn, 'rb') as f:
-        bot.send_document(msg.chat.id, f)
+def handle_wallet(message):
+    wallet = message.text.strip()
+    bot.reply_to(message, "Обрабатываю...")
+    tokens, summary = analyze_wallet(wallet)
+    report_file = generate_excel(wallet, tokens, summary)
+    with open(report_file, 'rb') as f:
+        bot.send_document(message.chat.id, f)
 
-# Run Flask server
+# Run Flask server for webhook
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
