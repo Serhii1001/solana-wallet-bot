@@ -121,7 +121,7 @@ def analyze_wallet(wallet):
             if not direction:
                 continue
 
-            # Учитываем wSOL как native SOL, если встречается в tokenTransfers
+            # Учитываем wSOL как native SOL
             if mint == 'So11111111111111111111111111111111111111112':
                 if direction == 'buy':
                     native_spent += amt
@@ -183,7 +183,7 @@ def analyze_wallet(wallet):
         'avg_win_pct': sum(r['delta_pct'] for r in tokens.values() if r['delta_sol'] > 0) / max(1, sum(1 for r in tokens.values() if r['delta_sol'] > 0)),
         'pnl_loss': sum(r['delta_sol'] for r in tokens.values() if r['delta_sol'] < 0),
         'balance_change': (sum(r['delta_sol'] for r in tokens.values()) / ((balance - sum(r['delta_sol'] for r in tokens.values())) or 1) * 100),
-        'winrate': sum(1 for r in tokens.values() if r['delta_sol'] > 0) / max(1, sum(1 for r in.tokens.values() if abs(r['delta_sol']) > 0)) * 100,
+        'winrate': sum(1 for r in tokens.values() if r['delta_sol'] > 0) / max(1, sum(1 for r in tokens.values() if abs(r['delta_sol']) > 0)) * 100,
         'time_period': '30 days',
         'sol_price': SOL_PRICE
     }
@@ -225,8 +225,4 @@ def handle(m):
 bot.register_message_handler(handle, func=lambda _: True)
 
 # Run app
-def main():
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
 
-if __name__ == '__main__':
-    main()
