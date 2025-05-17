@@ -35,17 +35,19 @@ def safe_request(url, params=None):
 def get_transactions(wallet, since_days):
     url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=1000"
     data = safe_request(url)
-    txs = data if isinstance(data, list) else data.get("transactions", [])
+    # Normalize response
+    txs_raw = data if isinstance(data, list) else data.get("transactions", [])
+    print(f"[DEBUG] Raw Helius returned {len(txs_raw)} transactions for wallet {wallet}")
     cutoff = datetime.utcnow() - timedelta(days=since_days)
     filtered = []
-    for tx in txs:
+    for tx in txs_raw:
         ts = tx.get("timestamp")
         if not ts:
             continue
         tdt = datetime.utcfromtimestamp(ts)
         if tdt >= cutoff:
             filtered.append(tx)
-    print(f"[DEBUG] Found {len(filtered)} transactions for last {since_days} days")
+    print(f"[DEBUG] Filtered to {len(filtered)} txs after applying since_days={since_days}")
     return filtered
 
 # Fetch token symbol
