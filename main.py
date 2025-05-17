@@ -152,5 +152,5 @@ def handle_message(message):
 
 if __name__ == '__main__':
     print("Bot is running...")
-    # Start long-polling without threading to avoid multiple getUpdates conflicts
-    bot.infinity_polling()
+    # Start polling without threading to avoid multiple getUpdates conflicts
+    bot.polling(none_stop=True, threaded=False)
