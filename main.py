@@ -70,7 +70,8 @@ def analyze_wallet(wallet):
                 if tr.get('mint') and (tr.get('toUserAccount')==wallet or tr.get('fromUserAccount')==wallet))
     tokens = {}
     for mint in mints:
-        rec = dict(mint=mint, symbol=get_symbol(mint), spent_sol=0, earned_sol=0,
+        wb.save(filename)
+    return filename
                    buys=0, sells=0, in_tokens=0, out_tokens=0,
                    first_ts=None, last_ts=None, first_mcap='', last_mcap='', current_mcap='')
         trades = safe_request(f"{DEXSCREENER_BASE}trades/solana/{mint}?maker={wallet}").get('trades', [])
