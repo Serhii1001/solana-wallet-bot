@@ -18,33 +18,30 @@ bot.delete_webhook()
 time.sleep(1)
 
 # Constants
-HELIUS_URL = "https://api.helius.xyz/v0/enhancedTransactions"
 DEFAULT_DAYS = 30
 LAMPORTS_PER_SOL = 1e9
+HELIUS_BASE = "https://api.helius.xyz/v0/addresses"
 
 
 def fetch_txns(wallet: str, days: int) -> dict:
     """
-    Fetch enhanced transactions for a wallet from Helius API within the last `days` days.
+    Fetch enhanced transaction history for a wallet from Helius API within the last `days` days.
     """
-    now = datetime.utcnow()
-    since = int((now - timedelta(days=days)).timestamp())
-    until = int(now.timestamp())
-    payload = {
-        "addresses": [wallet],
-        "since": since,
-        "until": until,
-        "includeTransactions": True
-    }
+    url = f"{HELIUS_BASE}/{wallet}/transactions"
     params = {"api-key": HELIUS_API_KEY}
-    response = requests.post(HELIUS_URL, json=payload, params=params)
+    response = requests.get(url, params=params)
     response.raise_for_status()
-    return response.json()
+    data = response.json()  # list of transaction objects
+
+    # Filter by timestamp
+    since_ts = int((datetime.utcnow() - timedelta(days=days)).timestamp())
+    filtered = [tx for tx in data if tx.get('timestamp', 0) >= since_ts]
+    return {'transactions': filtered}
 
 
 def analyze_trades(data: dict, wallet: str):
     """
-    Analyze transactions: compute SOL delta per txn and summary metrics.
+    Analyze transactions: compute SOL delta per transaction and summary metrics.
     """
     txns = data.get('transactions', [])
     metrics = []
@@ -53,33 +50,32 @@ def analyze_trades(data: dict, wallet: str):
     net = 0.0
 
     for entry in txns:
-        tx = entry.get('transaction', {})
-        meta = entry.get('meta', {})
-        account_keys = tx.get('message', {}).get('accountKeys', [])
-        try:
-            idx = account_keys.index(wallet)
-            pre = meta.get('preBalances', [])[idx]
-            post = meta.get('postBalances', [])[idx]
-            fee = meta.get('fee', 0)
-            delta = (post - pre - fee) / LAMPORTS_PER_SOL
-            fee_sol = fee / LAMPORTS_PER_SOL
-            date = datetime.utcfromtimestamp(entry.get('blockTime', 0)).strftime('%Y-%m-%d %H:%M:%S')
-            sig = entry.get('signature')
-            slot = entry.get('slot')
-            metrics.append({
-                'date': date,
-                'signature': sig,
-                'slot': slot,
-                'delta': delta,
-                'fee': fee_sol
-            })
-            if delta > 0:
-                total_in += delta
-            else:
-                total_out += abs(delta)
-            net += delta
-        except ValueError:
-            continue
+        timestamp = entry.get('timestamp', 0)
+        date = datetime.utcfromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+        sig = entry.get('signature')
+        slot = entry.get('slot')
+        fee_sol = entry.get('fee', 0) / LAMPORTS_PER_SOL
+
+        # Determine native SOL change for the wallet
+        delta_lamports = 0
+        for acct in entry.get('accountData', []):
+            if acct.get('account') == wallet:
+                delta_lamports = acct.get('nativeBalanceChange', 0)
+                break
+        delta = delta_lamports / LAMPORTS_PER_SOL
+
+        metrics.append({
+            'date': date,
+            'signature': sig,
+            'slot': slot,
+            'delta': delta,
+            'fee': fee_sol
+        })
+        if delta > 0:
+            total_in += delta
+        else:
+            total_out += abs(delta)
+        net += delta
 
     general = {
         'Total Transactions': len(metrics),
