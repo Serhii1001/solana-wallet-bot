@@ -225,4 +225,10 @@ def handle(m):
 bot.register_message_handler(handle, func=lambda _: True)
 
 # Run app
+def main():
+    # Use the PORT environment variable provided by Render
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
 
+if __name__ == '__main__':
+    main()
