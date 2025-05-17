@@ -197,5 +197,4 @@ def analyze_wallet(wallet):
     return tokens, summary
 
 # Генерация Excel-отчета
-
-... (остальной код без изменений)
+# остальной код без изменений
