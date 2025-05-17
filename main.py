@@ -99,7 +99,15 @@ def analyze_wallet(wallet):
                     rec["in_tokens"] += amt_token
                     if rec["first_ts"] is None or ts < rec["first_ts"]:
                         rec["first_ts"] = ts
+                        rec["first_mcap"] = get_historical_mcap(mint, ts)
                 else:
+                    rec["sells"] += 1
+                    rec["earned_sol"] += amt_sol
+                    rec["out_tokens"] += amt_token
+                    if rec["last_ts"] is None or ts > rec["last_ts"]:
+                        rec["last_ts"] = ts
+                        rec["last_mcap"] = get_historical_mcap(mint, ts)
+        else:
                     rec["sells"] += 1
                     rec["earned_sol"] += amt_sol
                     rec["out_tokens"] += amt_token
