@@ -131,73 +131,71 @@ def generate_excel(wallet, tokens, summary):
     filename = f"{wallet}_report.xlsx"
     wb = Workbook()
     ws = wb.active
-    ws.title = "Wallet Report"
+    ws.title = "ArGhost table"
 
-    # Summary row
-    headers = ["Wallet", "WinRate", "PnL", "Avg Win %", "PnL Loss", "Balance change %", "Period", "SOL Price", "Balance"]
-    ws.append(headers)
-    ws.append([
+    # Summary headers
+    hdr_summary = ['Wallet', 'WinRate', 'PnL R', 'Avg Win %', 'PnL Loss',
+                   'Balance change', 'TimePeriod', 'SOL Price Now', 'Balance']
+    for col, title in enumerate(hdr_summary, start=1):
+        ws.cell(row=1, column=col, value=title)
+
+    # Summary values
+    summary_vals = [
         wallet,
         f"{summary['winrate']:.2f}%",
-        f"{summary['pnl']:.4f}",
+        f"{summary['pnl']:.4f} SOL",
         f"{summary['avg_win_pct']:.2f}%",
-        f"{summary['pnl_loss']:.4f}",
+        f"{summary['pnl_loss']:.4f} SOL",
         f"{summary['balance_change']:.2f}%",
         summary['time_period'],
-        summary['sol_price'],
-        f"{summary['balance']:.4f}"
-    ])
-
-    # Token details header
-    ws.append([])
-    detail_headers = [
-        "Token", "Spent SOL", "Earned SOL", "Delta SOL", "%", "Buys", "Sells", "In", "Out", "Period", "Last trade"
+        f"{summary['sol_price']} $",
+        f"{summary['balance']:.4f} SOL"
     ]
-    ws.append(detail_headers)
+    for col, val in enumerate(summary_vals, start=1):
+        ws.cell(row=2, column=col, value=val)
 
+    # MCAP ranges
+    ws.cell(row=4, column=1, value='Tokens entry MCAP:')
+    ranges = ['<5k', '5k-30k', '30k-100k', '100k-300k', '300k+']
+    for idx, rng in enumerate(ranges, start=2):
+        ws.cell(row=5, column=idx, value=rng)
+
+    # Table headers
+    table_headers = ['Token', 'Spent SOL', 'Earned SOL', 'Delta Sol', 'Delta %',
+                     'Buys', 'Sells', 'Last trade', 'Income', 'Outcome', 'Fee',
+                     'Period', 'First buy Mcap', 'Last tx Mcap', 'Current Mcap',
+                     'Contract', 'Dexscreener', 'Photon']
+    for col, title in enumerate(table_headers, start=1):
+        ws.cell(row=8, column=col, value=title)
+
+    # Fill token rows
+    row = 9
     for rec in tokens.values():
-        ws.append([
-            rec['symbol'],
-            f"{rec['spent_sol']:.4f}",
-            f"{rec['earned_sol']:.4f}",
-            f"{rec['delta_sol']:.4f}",
-            f"{rec['delta_pct']:.2f}%",
-            rec['buys'],
-            rec['sells'],
-            rec['in_tokens'],
-            rec['out_tokens'],
-            rec['period'],
-            rec['last_trade'].strftime('%d.%m.%Y') if rec['last_trade'] else ''
-        ])
+        ws.cell(row=row, column=1, value=rec['symbol'])
+        ws.cell(row=row, column=2, value=f"{rec['spent_sol']:.4f} SOL")
+        ws.cell(row=row, column=3, value=f"{rec['earned_sol']:.4f} SOL")
+        ws.cell(row=row, column=4, value=f"{rec['delta_sol']:.4f}")
+        ws.cell(row=row, column=5, value=f"{rec['delta_pct']:.2f}%")
+        ws.cell(row=row, column=6, value=rec['buys'])
+        ws.cell(row=row, column=7, value=rec['sells'])
+        if rec['last_trade']:
+            ws.cell(row=row, column=8, value=rec['last_trade'].strftime('%d.%m.%Y'))
+        ws.cell(row=row, column=9, value=rec.get('in_tokens', 0))
+        ws.cell(row=row, column=10, value=rec.get('out_tokens', 0))
+        ws.cell(row=row, column=11, value=f"{rec.get('fee', 0):.4f}")
+        ws.cell(row=row, column=12, value=rec.get('period', '-'))
+        ws.cell(row=row, column=13, value=rec.get('first_mcap', ''))
+        ws.cell(row=row, column=14, value=rec.get('last_mcap', ''))
+        ws.cell(row=row, column=15, value=rec.get('current_mcap', ''))
+        ws.cell(row=row, column=16, value=rec['mint'])
+        # Hyperlinks
+        cell_dex = ws.cell(row=row, column=17)
+        cell_dex.value = 'View trades'
+        cell_dex.hyperlink = f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}"
+        cell_ph = ws.cell(row=row, column=18)
+        cell_ph.value = 'View trades'
+        cell_ph.hyperlink = f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"
+        row += 1
 
     wb.save(filename)
     return filename
-
-# Flask routes
-@app.route('/', methods=['GET'])
-def health_check():
-    return 'OK', 200
-
-@app.route(f"/{TELEGRAM_TOKEN}", methods=['POST'])
-def webhook():
-    update = telebot.types.Update.de_json(request.get_data(as_text=True))
-    bot.process_new_updates([update])
-    return 'OK', 200
-
-# Telegram handlers
-@bot.message_handler(commands=['start'])
-def start_cmd(message):
-    bot.reply_to(message, "Привет! Отправь мне Solana-адрес, и я пришлю отчёт.")
-
-@bot.message_handler(func=lambda m: True)
-def handle_wallet(message):
-    wallet = message.text.strip()
-    bot.reply_to(message, "Обрабатываю...")
-    tokens, summary = analyze_wallet(wallet)
-    report_file = generate_excel(wallet, tokens, summary)
-    with open(report_file, 'rb') as f:
-        bot.send_document(message.chat.id, f)
-
-# Run Flask server for webhook
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
