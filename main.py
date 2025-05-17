@@ -128,7 +128,7 @@ def analyze_wallet(wallet):
                 rec['earned_sol'] += sol_earned
                 rec['last_ts'] = ts
                 rec['last_mcap'] = get_historical_mcap(mint, ts)
-            rec['fee'] += tx.get('fee', 0) / 1e9 tx.get('fee', 0) / 1e9
+            rec['fee'] += tx.get('fee', 0) / 1e9
     for rec in tokens.values():
         rec['delta_sol'] = rec['earned_sol'] - rec['spent_sol']
         rec['delta_pct'] = (rec['delta_sol'] / rec['spent_sol'] * 100) if rec['spent_sol'] else 0
