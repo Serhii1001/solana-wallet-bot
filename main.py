@@ -18,8 +18,8 @@ bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
 # Set webhook on startup
-@app.before_first_request
-def setup_webhook():
+@app.before_serving
+async def setup_webhook():
     bot.remove_webhook()
     bot.set_webhook(f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}")
 
@@ -28,8 +28,10 @@ def setup_webhook():
 def health_check():
     return "Bot is running", 200
 
-# Telegram webhook route():
-    update = telebot.types.Update.de_json(request.get_data().decode('utf-8'), bot)
+# Telegram webhook route
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
+def telegram_webhook():
+    update = telebot.types.Update.de_json(request.get_data(as_text=True), bot)
     bot.process_new_updates([update])
     return "OK", 200
 
