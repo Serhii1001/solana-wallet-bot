@@ -12,6 +12,7 @@ SOL_PRICE        = os.getenv("SOL_PRICE", "0")
 
 # Initialize bot
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
+bot.remove_webhook()  # Ensure no webhook is active, allow polling(TELEGRAM_TOKEN)
 
 # HTTP helper
 def safe_request(url, params=None):
