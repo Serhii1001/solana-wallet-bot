@@ -166,24 +166,60 @@ def generate_excel(wallet, tokens, summary):
     return filename
 
 # Handlers
+analyze_days = {}
+
 @app.route('/', methods=['GET'])
-def health(): return 'OK',200
+def health():
+    return 'OK', 200
+
 @app.route(f"/{TELEGRAM_TOKEN}", methods=['POST'])
 def hook():
-    update=telebot.types.Update.de_json(request.get_data(as_text=True))
-    bot.process_new_updates([update]); return 'OK',200
-@bot.message_handler(commands=['analyze'])
-def set_days(m):
-    try:
-        d=int(m.text.split()[1]); bot.reply_to(m,f"Период: {d} дней"); bot.user_data[m.chat.id]=d
-    except: bot.reply_to(m,'/analyze N')
-@bot.message_handler(func=lambda m: True)
-def wh(m):
-    days=bot.user_data.get(m.chat.id,30)
-    bot.reply_to(m,f"Анализ {days} дней...")
-    tokens,summary=analyze_wallet(m.text.strip(),days)
-    if not tokens: bot.reply_to(m,'Нет tx'); return
-    fn=generate_excel(m.text.strip(),tokens,summary)
-    with open(fn,'rb') as f: bot.send_document(m.chat.id,f)
+    update = telebot.types.Update.de_json(request.get_data(as_text=True))
+    bot.process_new_updates([update])
+    return 'OK', 200
 
-if __name__=='__main__': app.run(host='0.0.0.0',port=int(os.environ.get('PORT',5000)))
+@bot.message_handler(commands=['analyze'])
+def analyze_cmd(message):
+    parts = message.text.strip().split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Использование: /analyze <days> [wallet]")
+        return
+    try:
+        days = int(parts[1])
+    except ValueError:
+        bot.reply_to(message, "Первый аргумент должен быть числом дней.")
+        return
+    # If wallet provided in same command
+    if len(parts) >= 3:
+        wallet = parts[2]
+        bot.reply_to(message, f"Анализ {days} дней для {wallet}...")
+        tokens, summary = analyze_wallet(wallet, days)
+        if not tokens:
+            bot.reply_to(message, "Не найдено транзакций за указанный период.")
+            return
+        report = generate_excel(wallet, tokens, summary)
+        with open(report, 'rb') as f:
+            bot.send_document(message.chat.id, f)
+    else:
+        analyze_days[message.chat.id] = days
+        bot.reply_to(message, f"Период анализа установлен: {days} дней. Теперь пришлите адрес кошелька.")
+
+@bot.message_handler(func=lambda m: True)
+def handle_wallet(message):
+    wallet = message.text.strip()
+    # Ensure valid Solana address
+    if len(wallet) not in [32, 44]:
+        bot.reply_to(message, "Отправьте корректный адрес Solana-кошелька.")
+        return
+    days = analyze_days.get(message.chat.id, 30)
+    bot.reply_to(message, f"Анализ {days} дней для {wallet}...")
+    tokens, summary = analyze_wallet(wallet, days)
+    if not tokens:
+        bot.reply_to(message, "Не найдено транзакций за указанный период.")
+        return
+    report = generate_excel(wallet, tokens, summary)
+    with open(report, 'rb') as f:
+        bot.send_document(message.chat.id, f)
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
