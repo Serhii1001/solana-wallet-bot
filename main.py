@@ -7,10 +7,10 @@ from openpyxl import Workbook
 
 # Configuration
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
-HELIUS_API_KEY   = os.getenv("HELIUS_API_KEY")
-WEBHOOK_URL      = os.getenv("WEBHOOK_URL")  # e.g. https://your-app.onrender.com
+HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # e.g. https://your-app.onrender.com
 DEXSCREENER_BASE = "https://api.dexscreener.com/latest/dex/tokens/solana/"
-SOL_PRICE        = os.getenv("SOL_PRICE", "0")
+SOL_PRICE = os.getenv("SOL_PRICE", "0")
 
 # Initialize bot and app
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
@@ -82,22 +82,45 @@ def analyze_wallet(wallet):
     bal = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/balances?api-key={HELIUS_API_KEY}")
     balance = bal.get('nativeBalance', 0) / 1e9
     tokens = {}
+
     for tx in txs:
         ts = datetime.fromtimestamp(tx.get('timestamp', 0))
-        sol_spent = sol_earned = 0.0
-        for nt in tx.get('nativeTransfers', []):
-            amount = nt.get('amount', 0) / 1e9
-            if nt.get('fromUserAccount') == wallet:
-                sol_spent += amount
-            if nt.get('toUserAccount') == wallet:
-                sol_earned += amount
-        seen = set()
+
+        # 1) Общее списание и зачисление SOL в транзакции
+        native_spent = sum(
+            nt.get('amount', 0) / 1e9
+            for nt in tx.get('nativeTransfers', [])
+            if nt.get('fromUserAccount') == wallet
+        )
+        native_earned = sum(
+            nt.get('amount', 0) / 1e9
+            for nt in tx.get('nativeTransfers', [])
+            if nt.get('toUserAccount') == wallet
+        )
+
+        # 2) Сколько каждого токена куплено/продано в этой транзакции
+        buys_per_mint = {}
+        sells_per_mint = {}
         for tr in tx.get('tokenTransfers', []):
             mint = tr.get('mint')
             amt = float(tr.get('tokenAmount', 0)) / (10 ** tr.get('decimals', 0))
-            direction = 'buy' if tr.get('toUserAccount') == wallet else 'sell' if tr.get('fromUserAccount') == wallet else None
+            if tr.get('toUserAccount') == wallet:
+                buys_per_mint[mint] = buys_per_mint.get(mint, 0) + amt
+            elif tr.get('fromUserAccount') == wallet:
+                sells_per_mint[mint] = sells_per_mint.get(mint, 0) + amt
+
+        # 3) Апорционирование списания/зачисления SOL по объему токенов
+        for tr in tx.get('tokenTransfers', []):
+            mint = tr.get('mint')
+            amt = float(tr.get('tokenAmount', 0)) / (10 ** tr.get('decimals', 0))
+            direction = None
+            if tr.get('toUserAccount') == wallet:
+                direction = 'buy'
+            elif tr.get('fromUserAccount') == wallet:
+                direction = 'sell'
             if not direction:
                 continue
+
             rec = tokens.setdefault(mint, {
                 'mint': mint,
                 'symbol': get_symbol(mint),
@@ -114,34 +137,48 @@ def analyze_wallet(wallet):
                 'last_mcap': '',
                 'current_mcap': ''
             })
-            # Count every transfer as one trade
+
             if direction == 'buy':
                 rec['buys'] += 1
                 rec['in_tokens'] += amt
-                rec['spent_sol'] += sol_spent
-                if not rec['first_ts']:
+                total_bought = buys_per_mint.get(mint, 1)
+                proportion = amt / total_bought if total_bought else 0
+                rec['spent_sol'] += native_spent * proportion
+
+                if rec['first_ts'] is None:
                     rec['first_ts'] = ts
                     rec['first_mcap'] = get_historical_mcap(mint, ts)
             else:
                 rec['sells'] += 1
                 rec['out_tokens'] += amt
-                rec['earned_sol'] += sol_earned
+                total_sold = sells_per_mint.get(mint, 1)
+                proportion = amt / total_sold if total_sold else 0
+                rec['earned_sol'] += native_earned * proportion
                 rec['last_ts'] = ts
                 rec['last_mcap'] = get_historical_mcap(mint, ts)
+
+            # Сборы сети считаем отдельно
             rec['fee'] += tx.get('fee', 0) / 1e9
+
+    # Финальные расчеты
     for rec in tokens.values():
         rec['delta_sol'] = rec['earned_sol'] - rec['spent_sol']
         rec['delta_pct'] = (rec['delta_sol'] / rec['spent_sol'] * 100) if rec['spent_sol'] else 0
         rec['period'] = format_duration(rec['first_ts'], rec['last_ts'])
         rec['last_trade'] = rec['last_ts'] or rec['first_ts']
         rec['current_mcap'] = get_current_mcap(rec['mint'])
-    summary = {'wallet': wallet, 'balance': balance,
-               'pnl': sum(r['delta_sol'] for r in tokens.values()),
-               'avg_win_pct': sum(r['delta_pct'] for r in tokens.values() if r['delta_sol']>0) / max(1, sum(1 for r in tokens.values() if r['delta_sol']>0)),
-               'pnl_loss': sum(r['delta_sol'] for r in tokens.values() if r['delta_sol']<0),
-               'balance_change': (sum(r['delta_sol'] for r in tokens.values()) / ((balance - sum(r['delta_sol'] for r in tokens.values())) or 1) * 100),
-               'winrate': sum(1 for r in tokens.values() if r['delta_sol']>0) / max(1, sum(1 for r in tokens.values() if abs(r['delta_sol'])>0)) * 100,
-               'time_period':'30 days','sol_price':SOL_PRICE}
+
+    summary = {
+        'wallet': wallet,
+        'balance': balance,
+        'pnl': sum(r['delta_sol'] for r in tokens.values()),
+        'avg_win_pct': sum(r['delta_pct'] for r in tokens.values() if r['delta_sol'] > 0) / max(1, sum(1 for r in tokens.values() if r['delta_sol'] > 0)),
+        'pnl_loss': sum(r['delta_sol'] for r in tokens.values() if r['delta_sol'] < 0),
+        'balance_change': (sum(r['delta_sol'] for r in tokens.values()) / ((balance - sum(r['delta_sol'] for r in tokens.values())) or 1) * 100),
+        'winrate': sum(1 for r in tokens.values() if r['delta_sol'] > 0) / max(1, sum(1 for r in tokens.values() if abs(r['delta_sol']) > 0)) * 100,
+        'time_period': '30 days',
+        'sol_price': SOL_PRICE
+    }
     return tokens, summary
 
 # Excel report
@@ -170,9 +207,18 @@ def generate_excel(wallet, tokens, summary):
 def welcome(m): bot.reply_to(m,"Привет! Отправь Solana-адрес.")
 bot.register_message_handler(welcome, commands=['start'])
 
-def handle(m): wallet=m.text.strip(); bot.reply_to(m,"Обрабатываю..."); tokens,summary=analyze_wallet(wallet); f=generate_excel(wallet,tokens,summary); bot.send_document(m.chat.id, open(f,'rb'))
+def handle(m):
+    wallet = m.text.strip()
+    bot.reply_to(m, "Обрабатываю...")
+    tokens, summary = analyze_wallet(wallet)
+    f = generate_excel(wallet, tokens, summary)
+    bot.send_document(m.chat.id, open(f, 'rb'))
+
 bot.register_message_handler(handle, func=lambda _: True)
 
 # Run app
-def main(): app.run(host='0.0.0.0', port=int(os.environ.get('PORT',5000)))
-if __name__=='__main__': main()
+def main():
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+
+if __name__ == '__main__':
+    main()
