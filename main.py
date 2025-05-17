@@ -17,13 +17,9 @@ SOL_PRICE = os.getenv("SOL_PRICE", "0")
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# Configure webhook
+# Configure webhook on start (remove any existing)
 bot.remove_webhook()
 bot.set_webhook(f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}")
-@app.before_serving
-async def setup_webhook():
-    bot.remove_webhook()
-    bot.set_webhook(f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}")
 
 # Health check endpoint for Render
 @app.route("/", methods=["GET"])
