@@ -57,31 +57,23 @@ def format_duration(start, end):
 # We count each tokenTransfer as a separate trade
 # and use nativeTransfers to compute SOL spent/earned per tx
 def analyze_wallet(wallet):
-    # Fetch transactions and balance
-    txs = safe_request(
-        f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100"
-    ) or []
-    bal = safe_request(
-        f"https://api.helius.xyz/v0/addresses/{wallet}/balances?api-key={HELIUS_API_KEY}"
-    )
+    txs = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100") or []
+    bal = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/balances?api-key={HELIUS_API_KEY}")
     balance = bal.get('nativeBalance', 0) / 1e9
-
     tokens = {}
+    # Initial aggregation from Helius
     for tx in txs:
         ts = datetime.fromtimestamp(tx.get('timestamp', 0))
-        # Compute SOL spent/earned this tx
         sol_spent = sol_earned = 0.0
         for nt in tx.get('nativeTransfers', []):
-            lam = nt.get('amount', 0)
-            sol = lam / 1e9
+            sol = nt.get('amount', 0) / 1e9
             if nt.get('fromUserAccount') == wallet:
                 sol_spent += sol
             if nt.get('toUserAccount') == wallet:
                 sol_earned += sol
-        # For each token transfer, count buy or sell
         for tr in tx.get('tokenTransfers', []):
             mint = tr.get('mint')
-            amount = float(tr.get('tokenAmount', 0)) / (10 ** tr.get('decimals', 0))
+            amt = float(tr.get('tokenAmount', 0)) / (10 ** tr.get('decimals', 0))
             if tr.get('toUserAccount') == wallet:
                 direction = 'buy'
             elif tr.get('fromUserAccount') == wallet:
@@ -104,51 +96,53 @@ def analyze_wallet(wallet):
                 'last_mcap': '',
                 'current_mcap': ''
             })
-            # Update counts and amounts
             if direction == 'buy':
                 rec['buys'] += 1
+                rec['in_tokens'] += amt
                 rec['spent_sol'] += sol_spent
-                rec['in_tokens'] += amount
                 if rec['first_ts'] is None:
                     rec['first_ts'] = ts
                     rec['first_mcap'] = get_historical_mcap(mint, ts)
             else:
                 rec['sells'] += 1
+                rec['out_tokens'] += amt
                 rec['earned_sol'] += sol_earned
-                rec['out_tokens'] += amount
                 rec['last_ts'] = ts
                 rec['last_mcap'] = get_historical_mcap(mint, ts)
-            # Accumulate fee
             rec['fee'] += tx.get('fee', 0) / 1e9
-
-    # Finalize metrics
+    # Override with Dexscreener trades for accuracy
+    for rec in tokens.values():
+        data = safe_request(f"https://api.dexscreener.com/latest/dex/trades/solana/{rec['mint']}?maker={wallet}")
+        trades = data.get('trades', [])
+        rec['buys'] = sum(1 for t in trades if t.get('side')=='buy')
+        rec['sells'] = sum(1 for t in trades if t.get('side')=='sell')
+        rec['spent_sol'] = sum(float(t.get('amountQuote',0))/1e9 for t in trades if t.get('side')=='buy')
+        rec['earned_sol'] = sum(float(t.get('amountQuote',0))/1e9 for t in trades if t.get('side')=='sell')
+        rec['in_tokens'] = sum(float(t.get('amount',0)) for t in trades if t.get('side')=='buy')
+        rec['out_tokens'] = sum(float(t.get('amount',0)) for t in trades if t.get('side')=='sell')
+        buy_times = [datetime.fromtimestamp(t.get('timestamp',0)/1000) for t in trades if t.get('side')=='buy']
+        sell_times = [datetime.fromtimestamp(t.get('timestamp',0)/1000) for t in trades if t.get('side')=='sell']
+        if buy_times:
+            first = min(buy_times)
+            rec['first_ts'] = first
+            rec['first_mcap'] = get_historical_mcap(rec['mint'], first)
+        if sell_times:
+            last = max(sell_times)
+            rec['last_ts'] = last
+            rec['last_mcap'] = get_historical_mcap(rec['mint'], last)
     for rec in tokens.values():
         rec['delta_sol'] = rec['earned_sol'] - rec['spent_sol']
-        rec['delta_pct'] = (rec['delta_sol'] / rec['spent_sol'] * 100) if rec['spent_sol'] else 0
+        rec['delta_pct'] = (rec['delta_sol']/rec['spent_sol']*100) if rec['spent_sol'] else 0
         rec['period'] = format_duration(rec['first_ts'], rec['last_ts'])
         rec['last_trade'] = rec['last_ts'] or rec['first_ts']
         rec['current_mcap'] = get_current_mcap(rec['mint'])
-
-    summary = {
-        'wallet': wallet,
-        'balance': balance,
-        'pnl': sum(r['delta_sol'] for r in tokens.values()),
-        'avg_win_pct': (
-            sum(r['delta_pct'] for r in tokens.values() if r['delta_sol'] > 0) /
-            max(1, sum(1 for r in tokens.values() if r['delta_sol'] > 0))
-        ),
-        'pnl_loss': sum(r['delta_sol'] for r in tokens.values() if r['delta_sol'] < 0),
-        'balance_change': (
-            sum(r['delta_sol'] for r in tokens.values()) /
-            max(1, balance) * 100
-        ),
-        'winrate': (
-            sum(1 for r in tokens.values() if r['delta_sol'] > 0) /
-            max(1, len(tokens)) * 100
-        ),
-        'time_period': '30 days',
-        'sol_price': SOL_PRICE
-    }
+    summary = {'wallet': wallet, 'balance': balance,
+               'pnl': sum(r['delta_sol'] for r in tokens.values()),
+               'avg_win_pct': sum(r['delta_pct'] for r in tokens.values() if r['delta_sol']>0)/max(1,sum(1 for r in tokens.values() if r['delta_sol']>0)),
+               'pnl_loss': sum(r['delta_sol'] for r in tokens.values() if r['delta_sol']<0),
+               'balance_change': (sum(r['delta_sol'] for r in tokens.values())/max(1,balance)*100),
+               'winrate': (sum(1 for r in tokens.values() if r['delta_sol']>0)/max(1,len(tokens))*100),
+               'time_period':'30 days','sol_price':SOL_PRICE}
     return tokens, summary
 
 # Generate Excel report
