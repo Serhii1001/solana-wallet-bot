@@ -17,7 +17,9 @@ SOL_PRICE = os.getenv("SOL_PRICE", "0")
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# Set webhook on startup
+# Configure webhook
+bot.remove_webhook()
+bot.set_webhook(f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}")
 @app.before_serving
 async def setup_webhook():
     bot.remove_webhook()
