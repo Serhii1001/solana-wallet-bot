@@ -95,27 +95,40 @@ def analyze_wallet(wallet):
         for tr in tx.get('tokenTransfers', []):
             mint = tr.get('mint')
             amt = float(tr.get('tokenAmount', 0)) / (10 ** tr.get('decimals', 0))
-            dir = 'buy' if tr.get('toUserAccount') == wallet else 'sell' if tr.get('fromUserAccount') == wallet else None
-            if not dir:
+            direction = 'buy' if tr.get('toUserAccount') == wallet else 'sell' if tr.get('fromUserAccount') == wallet else None
+            if not direction:
                 continue
-            rec = tokens.setdefault(mint, {'mint': mint, 'symbol': get_symbol(mint), 'spent_sol':0, 'earned_sol':0,
-                                            'buys':0,'sells':0,'in_tokens':0,'out_tokens':0,'fee':0,
-                                            'first_ts':None,'last_ts':None,'first_mcap':'','last_mcap':'','current_mcap':''})
-            key = (mint, dir)
-            if key not in seen:
-                if dir == 'buy': rec['buys'] += 1; rec['spent_sol'] += sol_spent
-                else:          rec['sells'] += 1; rec['earned_sol'] += sol_earned
-                seen.add(key)
-            if dir == 'buy':
+            rec = tokens.setdefault(mint, {
+                'mint': mint,
+                'symbol': get_symbol(mint),
+                'spent_sol': 0,
+                'earned_sol': 0,
+                'buys': 0,
+                'sells': 0,
+                'in_tokens': 0,
+                'out_tokens': 0,
+                'fee': 0,
+                'first_ts': None,
+                'last_ts': None,
+                'first_mcap': '',
+                'last_mcap': '',
+                'current_mcap': ''
+            })
+            # Count every transfer as one trade
+            if direction == 'buy':
+                rec['buys'] += 1
                 rec['in_tokens'] += amt
+                rec['spent_sol'] += sol_spent
                 if not rec['first_ts']:
                     rec['first_ts'] = ts
                     rec['first_mcap'] = get_historical_mcap(mint, ts)
             else:
+                rec['sells'] += 1
                 rec['out_tokens'] += amt
-                rec['last_ts']    = ts
-                rec['last_mcap']  = get_historical_mcap(mint, ts)
-            rec['fee'] += tx.get('fee', 0) / 1e9
+                rec['earned_sol'] += sol_earned
+                rec['last_ts'] = ts
+                rec['last_mcap'] = get_historical_mcap(mint, ts)
+            rec['fee'] += tx.get('fee', 0) / 1e9 tx.get('fee', 0) / 1e9
     for rec in tokens.values():
         rec['delta_sol'] = rec['earned_sol'] - rec['spent_sol']
         rec['delta_pct'] = (rec['delta_sol'] / rec['spent_sol'] * 100) if rec['spent_sol'] else 0
