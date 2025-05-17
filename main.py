@@ -128,18 +128,33 @@ def generate_excel(wallet, tokens, summary):
     for col, c in enumerate(cols,1): ws.cell(row=8, column=col, value=c)
     row = 9
     for rec in tokens.values():
-        ws.cell(row,row,value=rec['symbol']); ws.cell(row,2,value=f"{rec['spent_sol']:.2f} SOL")
-        ws.cell(row,3,value=f"{rec['earned_sol']:.2f} SOL"); ws.cell(row,4,value=f"{rec['delta_sol']:.2f}")
-        ws.cell(row,5,value=f"{rec['delta_pct']:.2f}%"); ws.cell(row,6,value=rec['buys']); ws.cell(row,7,value=rec['sells'])
-        if rec['last_trade']: ws.cell(row,8,value=rec['last_trade'].strftime('%d.%m.%Y'))
-        ws.cell(row,9,value=rec['in_tokens']); ws.cell(row,10,value=rec['out_tokens'])
-        ws.cell(row,11,value=f"{rec['fee']:.2f}"); ws.cell(row,12,value=rec['period'])
-        ws.cell(row,13,value=rec['first_mcap']); ws.cell(row,14,value=rec['last_mcap']); ws.cell(row,15,value=rec['current_mcap'])
-        ws.cell(row,16,value=rec['mint'])
-        cel = ws.cell(row,17); cel.value='View trades'; cel.hyperlink=f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}";
-        cel2=ws.cell(row,18); cel2.value='View trades'; cel2.hyperlink=f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"
-        row+=1
+        # Place symbol in first column
+        ws.cell(row=row, column=1, value=rec['symbol'])
+        ws.cell(row, 2, value=f"{rec['spent_sol']:.2f} SOL")
+        ws.cell(row, 3, value=f"{rec['earned_sol']:.2f} SOL")
+        ws.cell(row, 4, value=f"{rec['delta_sol']:.2f}")
+        ws.cell(row, 5, value=f"{rec['delta_pct']:.2f}%")
+        ws.cell(row, 6, value=rec['buys'])
+        ws.cell(row, 7, value=rec['sells'])
+        if rec['last_trade']:
+            ws.cell(row, 8, value=rec['last_trade'].strftime('%d.%m.%Y'))
+        ws.cell(row, 9, value=rec['in_tokens'])
+        ws.cell(row, 10, value=rec['out_tokens'])
+        ws.cell(row, 11, value=f"{rec['fee']:.2f}")
+        ws.cell(row, 12, value=rec['period'])
+        ws.cell(row, 13, value=rec['first_mcap'])
+        ws.cell(row, 14, value=rec['last_mcap'])
+        ws.cell(row, 15, value=rec['current_mcap'])
+        ws.cell(row, 16, value=rec['mint'])
+        d_cell = ws.cell(row, 17)
+        d_cell.value = 'View trades'
+        d_cell.hyperlink = f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}"
+        p_cell = ws.cell(row, 18)
+        p_cell.value = 'View trades'
+        p_cell.hyperlink = f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"
+        row += 1
     wb.save(filename)
+    return filename
     return filename
 
 # Flask routes
