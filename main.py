@@ -1,190 +1,189 @@
 import os
-import time
 import requests
-import openpyxl
-from openpyxl.styles import Font, Alignment
 import telebot
+from flask import Flask, request
 from datetime import datetime, timedelta
+from openpyxl import Workbook
 
-# Load environment variables
-BOT_TOKEN = os.getenv('BOT_TOKEN')  # Your Telegram bot token
-HELIUS_API_KEY = os.getenv('HELIUS_API_KEY')  # Your Helius API key
+# Configuration
+TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
+HELIUS_API_KEY   = os.getenv("HELIUS_API_KEY")
+WEBHOOK_URL      = os.getenv("WEBHOOK_URL")  # e.g. https://your-app.onrender.com
+DEXSCREENER_BASE = "https://api.dexscreener.com/latest/dex/"
+SOL_PRICE        = os.getenv("SOL_PRICE", "0")
 
-if not BOT_TOKEN or not HELIUS_API_KEY:
-    raise ValueError("Please set BOT_TOKEN and HELIUS_API_KEY environment variables.")
+# Initialize bot and Flask app
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+app = Flask(__name__)
 
-bot = telebot.TeleBot(BOT_TOKEN)
+# Remove webhook if exists and set new one
+bot.delete_webhook()
+bot.set_webhook(f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}")
 
-# Constants
-HELIUS_BASE = "https://api.helius.xyz/v0/enhancedTransactions"
-DEFAULT_DAYS = 30
+# Helper to make HTTP GET requests with retries
+def safe_request(url, params=None):
+    for _ in range(3):
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception:
+            continue
+    return {}
 
+# Fetch and filter transactions via Helius
+def get_transactions(wallet, since_days):
+    url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=1000"
+    data = safe_request(url)
+    txs = data if isinstance(data, list) else data.get("transactions", [])
+    cutoff = datetime.utcnow() - timedelta(days=since_days)
+    filtered = []
+    for tx in txs:
+        ts = tx.get("timestamp")
+        if not ts:
+            continue
+        tdt = datetime.utcfromtimestamp(ts)
+        if tdt >= cutoff:
+            filtered.append(tx)
+    print(f"[DEBUG] Found {len(filtered)} transactions for last {since_days} days")
+    return filtered
 
-def fetch_transactions(wallet: str, days: int):
-    """
-    Fetch enhanced transactions for a wallet from Helius API within the last `days` days.
-    """
-    end_time = datetime.utcnow()
-    start_time = end_time - timedelta(days=days)
-    payload = {
-        "addresses": [wallet],
-        "until": int(end_time.timestamp()),
-        "since": int(start_time.timestamp()),
-        "includeTransactions": True
+# Fetch token symbol
+def get_symbol(mint):
+    data = safe_request(f"https://api.helius.xyz/v0/mints/{mint}?api-key={HELIUS_API_KEY}")
+    return data.get("symbol", mint)
+
+# Historical market cap
+def get_historical_mcap(mint, ts):
+    chart = safe_request(f"{DEXSCREENER_BASE}tokens/solana/{mint}/chart?interval=1h").get('chart', [])
+    if not chart:
+        return ''
+    target = int(ts.timestamp() * 1000)
+    best = min(chart, key=lambda p: abs(p.get('timestamp', 0) - target))
+    return best.get('marketCap', '')
+
+# Current market cap
+def get_current_mcap(mint):
+    return safe_request(f"{DEXSCREENER_BASE}tokens/solana/{mint}").get('stats', {}).get('marketCap', '')
+
+# Format duration between two datetimes
+def format_duration(start, end):
+    if not start or not end:
+        return '-'
+    delta = end - start
+    days, rem = divmod(delta.total_seconds(), 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    if days:
+        return f"{int(days)}d {int(hours)}h"
+    if hours:
+        return f"{int(hours)}h {int(minutes)}m"
+    if minutes:
+        return f"{int(minutes)}m"
+    return f"{int(seconds)}s"
+
+# Analyze wallet trades
+def analyze_wallet(wallet, since_days):
+    txs = get_transactions(wallet, since_days)
+    bal = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/balances?api-key={HELIUS_API_KEY}")
+    balance = bal.get('nativeBalance', 0) / 1e9
+
+    tokens = {}
+    # initial pass to collect all mints
+    for tx in txs:
+        for tr in tx.get('tokenTransfers', []):
+            mint = tr.get('mint')
+            if mint:
+                tokens.setdefault(mint, {
+                    'mint': mint,
+                    'symbol': get_symbol(mint),
+                    'buys': 0, 'sells': 0,
+                    'spent_sol': 0, 'earned_sol': 0,
+                    'in_tokens': 0, 'out_tokens': 0,
+                    'fee': 0,
+                    'first_ts': None, 'last_ts': None,
+                    'first_mcap': '', 'last_mcap': '', 'current_mcap': ''
+                })
+    # override with Dexscreener
+    for rec in tokens.values():
+        data = safe_request(f"{DEXSCREENER_BASE}trades/solana/{rec['mint']}?maker={wallet}")
+        trades = data.get('trades', [])
+        # count and sum
+        rec['buys'] = sum(1 for t in trades if t.get('side')=='buy')
+        rec['sells'] = sum(1 for t in trades if t.get('side')=='sell')
+        rec['spent_sol'] = sum(float(t.get('amountQuote',0))/1e9 for t in trades if t.get('side')=='buy')
+        rec['earned_sol'] = sum(float(t.get('amountQuote',0))/1e9 for t in trades if t.get('side')=='sell')
+        rec['in_tokens'] = sum(float(t.get('amount',0)) for t in trades if t.get('side')=='buy')
+        rec['out_tokens'] = sum(float(t.get('amount',0)) for t in trades if t.get('side')=='sell')
+        buy_times = [datetime.fromtimestamp(t.get('timestamp',0)/1000) for t in trades if t.get('side')=='buy']
+        sell_times = [datetime.fromtimestamp(t.get('timestamp',0)/1000) for t in trades if t.get('side')=='sell']
+        if buy_times:
+            first = min(buy_times)
+            rec['first_ts'] = first
+            rec['first_mcap'] = get_historical_mcap(rec['mint'], first)
+        if sell_times:
+            last = max(sell_times)
+            rec['last_ts'] = last
+            rec['last_mcap'] = get_historical_mcap(rec['mint'], last)
+        # final metrics
+        rec['delta_sol'] = rec['earned_sol'] - rec['spent_sol']
+        rec['delta_pct'] = (rec['delta_sol']/rec['spent_sol']*100) if rec['spent_sol'] else 0
+        rec['period'] = format_duration(rec['first_ts'], rec['last_ts'])
+        rec['last_trade'] = rec['last_ts'] or rec['first_ts']
+        rec['current_mcap'] = get_current_mcap(rec['mint'])
+
+    # summary
+    summary = {
+        'wallet': wallet,
+        'balance': balance,
+        'pnl': sum(r['delta_sol'] for r in tokens.values()),
+        'avg_win_pct': sum(r['delta_pct'] for r in tokens.values() if r['delta_sol']>0)
+                       / max(1,sum(1 for r in tokens.values() if r['delta_sol']>0)),
+        'pnl_loss': sum(r['delta_sol'] for r in tokens.values() if r['delta_sol']<0),
+        'balance_change': sum(r['delta_sol'] for r in tokens.values())/max(1,balance)*100,
+        'winrate': sum(1 for r in tokens.values() if r['delta_sol']>0)/max(1,len(tokens))*100,
+        'time_period': f"{since_days} days",
+        'sol_price': SOL_PRICE
     }
-    params = {"api-key": HELIUS_API_KEY}
-    response = requests.post(HELIUS_BASE, json=payload, params=params)
-    response.raise_for_status()
-    return response.json()
+    return tokens, summary
 
-
-def analyze_trades(data: dict):
-    """
-    Analyze trade metrics: PnL, win rate, duration, per token stats.
-    """
-    trades = []  # list of dicts per completed buy+sell
-    token_stats = {}
-    balance = 0
-
-    # Simplest logic: track each swap of SPL tokens vs SOL
-    for entry in data.get('transactions', []):
-        for instr in entry.get('instructions', []):
-            if instr.get('program') == 'spl-token':
-                # Parse based on amount and mint
-                pass
-    # For brevity, we assume entries contain 'trade' events:
-    # data['trades'] with buy_time, sell_time, token, spent, earned, fee
-    for t in data.get('trades', []):
-        spent = t['spent']
-        earned = t['earned']
-        profit = earned - spent
-        duration = t['sell_time'] - t['buy_time']
-        trades.append({
-            'token': t['token'],
-            'spent': spent,
-            'earned': earned,
-            'fee': t.get('fee', 0),
-            'profit': profit,
-            'duration': duration,
-            'delta_percent': (profit / spent * 100) if spent else 0
-        })
-        balance += profit
-        # Aggregate per token
-        stats = token_stats.setdefault(t['token'], {
-            'spent': 0, 'earned': 0,
-            'profit': 0, 'fee': 0,
-            'buys': 0, 'sells': 0
-        })
-        stats['spent'] += spent
-        stats['earned'] += earned
-        stats['profit'] += profit
-        stats['fee'] += t.get('fee', 0)
-        stats['buys'] += 1
-        stats['sells'] += 1
-
-    win_rate = (sum(1 for t in trades if t['profit'] > 0) / len(trades) * 100) if trades else 0
-    pnL_r = balance
-    time_period = f"{days} days"
-
-    return {
-        'general': {
-            'Win Rate (%)': round(win_rate, 2),
-            'PnL R': round(pnL_r, 4),
-            'TimePeriod': time_period,
-            'Balance': round(balance, 4),
-        },
-        'tokens': token_stats,
-        'trades': trades
-    }
-
-
-def generate_excel_report(wallet: str, analysis: dict, period: int):
-    """
-    Generate an Excel report with openpyxl and return file path.
-    """
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = 'General Metrics'
-
-    # Write general metrics
-    ws.append(['Wallet', wallet])
-    for key, val in analysis['general'].items():
-        ws.append([key, val])
-    for cell in ws['A'] + ws['B']:
-        cell.font = Font(bold=True)
-    ws.column_dimensions['A'].width = 20
-    ws.column_dimensions['B'].width = 15
-
-    # Token metrics sheet
-    ws2 = wb.create_sheet(title='Token Stats')
-    headers = ['Token', 'Spent', 'Earned', 'Profit', 'Fee', 'Buys', 'Sells']
-    ws2.append(headers)
-    for token, stats in analysis['tokens'].items():
-        ws2.append([
-            token,
-            stats['spent'],
-            stats['earned'],
-            stats['profit'],
-            stats['fee'],
-            stats['buys'],
-            stats['sells'],
+# Generate Excel report
+def generate_excel(wallet, tokens, summary):
+    filename = f"{wallet}_report.xlsx"
+    wb = Workbook(); ws = wb.active; ws.title = "Wallet Report"
+    hdr = ['Token','Buys','Sells','Spent SOL','Earned SOL','Delta','%','First','Last','Fee']
+    ws.append(hdr)
+    for rec in tokens.values():
+        ws.append([
+            rec['symbol'], rec['buys'], rec['sells'],
+            f"{rec['spent_sol']:.4f}", f"{rec['earned_sol']:.4f}", f"{rec['delta_sol']:.4f}",
+            f"{rec['delta_pct']:.2f}%",
+            rec['first_ts'].strftime('%d.%m.%Y') if rec['first_ts'] else '',
+            rec['last_ts'].strftime('%d.%m.%Y') if rec['last_ts'] else '',
+            f"{rec['fee']:.4f}"
         ])
-    for col in ws2.columns:
-        col[0].font = Font(bold=True)
-        ws2.column_dimensions[col[0].column_letter].width = 15
+    wb.save(filename)
+    return filename
 
-    # Trades sheet
-    ws3 = wb.create_sheet(title='Trades')
-    headers = ['Token', 'Spent', 'Earned', 'Profit', 'Fee', 'Delta %', 'Duration (s)']
-    ws3.append(headers)
-    for t in analysis['trades']:
-        ws3.append([
-            t['token'], t['spent'], t['earned'], t['profit'], t['fee'],
-            round(t['delta_percent'], 2), int(t['duration'].total_seconds())
-        ])
-    for col in ws3.columns:
-        col[0].font = Font(bold=True)
-        ws3.column_dimensions[col[0].column_letter].width = 15
-
-    # Save file
-    filename = f"report_{wallet[:6]}_{period}d_{int(time.time())}.xlsx"
-    path = os.path.join('/mnt/data', filename)
-    wb.save(path)
-    return path
-
-
-@bot.message_handler(commands=['start'])
-def send_welcome(message):
-    bot.reply_to(message, (
-        "Привет! Отправь мне адрес Solana-кошелька и период анализа в днях, например:
-"
-        "`<адрес> 30`",
-        parse_mode='Markdown'
-    ))
-
-
+# Handlers
+@app.route('/', methods=['GET'])
+def health(): return 'OK',200
+@app.route(f"/{TELEGRAM_TOKEN}", methods=['POST'])
+def hook():
+    update=telebot.types.Update.de_json(request.get_data(as_text=True))
+    bot.process_new_updates([update]); return 'OK',200
+@bot.message_handler(commands=['analyze'])
+def set_days(m):
+    try:
+        d=int(m.text.split()[1]); bot.reply_to(m,f"Период: {d} дней"); bot.user_data[m.chat.id]=d
+    except: bot.reply_to(m,'/analyze N')
 @bot.message_handler(func=lambda m: True)
-def handle_message(message):
-    parts = message.text.strip().split()
-    if len(parts) not in (1, 2):
-        return bot.reply_to(message, "Используй формат: `<адрес> [период_в_днях]`.")
-    wallet = parts[0]
-    try:
-        period = int(parts[1]) if len(parts) == 2 else DEFAULT_DAYS
-    except ValueError:
-        return bot.reply_to(message, "Период должен быть числом в днях.")
+def wh(m):
+    days=bot.user_data.get(m.chat.id,30)
+    bot.reply_to(m,f"Анализ {days} дней...")
+    tokens,summary=analyze_wallet(m.text.strip(),days)
+    if not tokens: bot.reply_to(m,'Нет tx'); return
+    fn=generate_excel(m.text.strip(),tokens,summary)
+    with open(fn,'rb') as f: bot.send_document(m.chat.id,f)
 
-    msg = bot.reply_to(message, "Собираю данные... Это может занять минуту.")
-    try:
-        data = fetch_transactions(wallet, period)
-        analysis = analyze_trades(data)
-        report_path = generate_excel_report(wallet, analysis, period)
-        bot.send_document(message.chat.id, open(report_path, 'rb'), caption="Вот твой отчет 📊")
-    except Exception as e:
-        bot.reply_to(message, f"Ошибка: {e}")
-    finally:
-        bot.delete_message(msg.chat.id, msg.message_id)
-
-if __name__ == '__main__':
-    print("Bot is running...")
-    bot.polling(none_stop=True)
+if __name__=='__main__': app.run(host='0.0.0.0',port=int(os.environ.get('PORT',5000)))
