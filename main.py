@@ -4,138 +4,175 @@ import telebot
 from flask import Flask, request
 from datetime import datetime
 from openpyxl import Workbook
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
-# Конфигурация
+# Configuration
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
-HELIUS_API_KEY = os.getenv("HELIUS_API_KEY")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # например, https://ваш-домен/onrender.com
-# Базовые URLs для работы с Dexscreener
-DEXSCREENER_TRADE_BASE = "https://api.dexscreener.com/latest/dex/trades/solana/"
-# Цена SOL в USD, нужна для конвертации объема в USD при необходимости
-SOL_PRICE = float(os.getenv("SOL_PRICE", "0"))
+HELIUS_API_KEY   = os.getenv("HELIUS_API_KEY")
+WEBHOOK_URL      = os.getenv("WEBHOOK_URL")  # e.g. https://your-app.onrender.com
+DEXSCREENER_BASE = "https://api.dexscreener.com/latest/dex/tokens/solana/"
+SOL_PRICE        = os.getenv("SOL_PRICE", "0")
 
-# Инициализация бота и Flask приложения
+# Initialize bot and app
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
 
-# Настройка вебхука (удаляем старый, ставим новый)
+# Configure webhook (remove existing, then set new)
 bot.remove_webhook()
 bot.set_webhook(f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}")
 
-# Эндпоинт для проверки статуса
-@app.route('/', methods=['GET'])
+# Health-check endpoint
 def health_check():
     return "OK", 200
+app.add_url_rule('/', 'health_check', health_check, methods=['GET'])
 
-# Эндпоинт для Telegram вебхука
-@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
+# Telegram webhook endpoint
 def telegram_webhook():
     data = request.get_data(as_text=True)
     update = telebot.types.Update.de_json(data)
     bot.process_new_updates([update])
     return "OK", 200
+app.add_url_rule(f'/{TELEGRAM_TOKEN}', 'telegram_webhook', telegram_webhook, methods=['POST'])
 
-# Функция для безопасных HTTP-запросов с ретраями
-def safe_get(url, params=None, headers=None):
-    session = requests.Session()
-    retries = Retry(
-        total=5,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504]
-    )
-    session.mount("https://", HTTPAdapter(max_retries=retries))
-    response = session.get(url, params=params, headers=headers or {})
-    response.raise_for_status()
-    return response
+# HTTP helper
+def safe_request(url, params=None):
+    for _ in range(3):
+        try:
+            r = requests.get(url, params=params, timeout=10)
+            if r.status_code == 200:
+                return r.json()
+        except:
+            continue
+    return {}
 
-# Получение общего объема покупок в SOL по указанной паре Dexscreener
-def get_spend_sol(pair_id):
-    try:
-        url = DEXSCREENER_TRADE_BASE + pair_id
-        resp = safe_get(url)
-        data = resp.json()
-        trades = data.get('trades', [])
-        total_sol = 0.0
-        for t in trades:
-            # Токен обмена: quoteToken — SOL, baseToken — целевой токен
-            if t.get('side') == 'buy':
-                sol_amount = float(t.get('quoteTokenAmount', 0))
-                total_sol += sol_amount
-        return total_sol
-    except Exception as e:
-        print(f"Error fetching Dexscreener data: {e}")
-        return 0.0
+# Helpers
 
-# Анализ кошелька через Helius и подсчет метрик
-def analyze_wallet(address, dex_pair_id=None):
-    # Запрос списка транзакций Solana по адресу
-    url = f"https://api.helius.xyz/v0/addresses/{address}/transactions?api-key={HELIUS_API_KEY}"
-    resp = safe_get(url)
-    txs = resp.json()
+def get_symbol(mint):
+    return safe_request(f"https://api.helius.xyz/v0/mints/{mint}?api-key={HELIUS_API_KEY}").get('symbol', mint)
 
-    sent = 0.0
-    received = 0.0
-    total_tx = len(txs)
+def get_historical_mcap(mint, ts):
+    chart = safe_request(f"{DEXSCREENER_BASE}{mint}/chart?interval=1h").get('chart', [])
+    if not chart:
+        return ''
+    target = int(ts.timestamp() * 1000)
+    best = min(chart, key=lambda p: abs(p.get('timestamp', 0) - target))
+    return best.get('marketCap', '')
 
+def get_current_mcap(mint):
+    return safe_request(f"{DEXSCREENER_BASE}{mint}").get('stats', {}).get('marketCap', '')
+
+def format_duration(start, end):
+    if not start or not end:
+        return '-'
+    delta = end - start
+    days, rem = divmod(delta.total_seconds(), 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    if days:
+        return f"{int(days)}d {int(hours)}h"
+    if hours:
+        return f"{int(hours)}h {int(minutes)}m"
+    if minutes:
+        return f"{int(minutes)}m"
+    return f"{int(seconds)}s"
+
+# Core logic
+
+def analyze_wallet(wallet):
+    txs = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100") or []
+    bal = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/balances?api-key={HELIUS_API_KEY}")
+    balance = bal.get('nativeBalance', 0) / 1e9
+    tokens = {}
     for tx in txs:
-        # Проходим по инструкциям в каждой транзакции
-        for instruction in tx.get('instructions', []):
-            info = instruction.get('info', {})
-            # Учитываем SOL-торговые инстанции (transfer)
-            if instruction.get('type') == 'transfer':
-                lamports = info.get('lamports', 0)
-                sol_amount = lamports / 1e9
-                # Источник транзакции — наш адрес
-                if info.get('source') == address:
-                    sent += sol_amount
-                # Назначение транзакции — наш адрес
-                if info.get('destination') == address:
-                    received += sol_amount
+        ts = datetime.fromtimestamp(tx.get('timestamp', 0))
+        sol_spent = sol_earned = 0.0
+        for nt in tx.get('nativeTransfers', []):
+            amount = nt.get('amount', 0) / 1e9
+            if nt.get('fromUserAccount') == wallet:
+                sol_spent += amount
+            if nt.get('toUserAccount') == wallet:
+                sol_earned += amount
+        seen = set()
+        for tr in tx.get('tokenTransfers', []):
+            mint = tr.get('mint')
+            amt = float(tr.get('tokenAmount', 0)) / (10 ** tr.get('decimals', 0))
+            direction = 'buy' if tr.get('toUserAccount') == wallet else 'sell' if tr.get('fromUserAccount') == wallet else None
+            if not direction:
+                continue
+            rec = tokens.setdefault(mint, {
+                'mint': mint,
+                'symbol': get_symbol(mint),
+                'spent_sol': 0,
+                'earned_sol': 0,
+                'buys': 0,
+                'sells': 0,
+                'in_tokens': 0,
+                'out_tokens': 0,
+                'fee': 0,
+                'first_ts': None,
+                'last_ts': None,
+                'first_mcap': '',
+                'last_mcap': '',
+                'current_mcap': ''
+            })
+            # Count every transfer as one trade
+            if direction == 'buy':
+                rec['buys'] += 1
+                rec['in_tokens'] += amt
+                rec['spent_sol'] += sol_spent
+                if not rec['first_ts']:
+                    rec['first_ts'] = ts
+                    rec['first_mcap'] = get_historical_mcap(mint, ts)
+            else:
+                rec['sells'] += 1
+                rec['out_tokens'] += amt
+                rec['earned_sol'] += sol_earned
+                rec['last_ts'] = ts
+                rec['last_mcap'] = get_historical_mcap(mint, ts)
+            rec['fee'] += tx.get('fee', 0) / 1e9
+    for rec in tokens.values():
+        rec['delta_sol'] = rec['earned_sol'] - rec['spent_sol']
+        rec['delta_pct'] = (rec['delta_sol'] / rec['spent_sol'] * 100) if rec['spent_sol'] else 0
+        rec['period'] = format_duration(rec['first_ts'], rec['last_ts'])
+        rec['last_trade'] = rec['last_ts'] or rec['first_ts']
+        rec['current_mcap'] = get_current_mcap(rec['mint'])
+    summary = {'wallet': wallet, 'balance': balance,
+               'pnl': sum(r['delta_sol'] for r in tokens.values()),
+               'avg_win_pct': sum(r['delta_pct'] for r in tokens.values() if r['delta_sol']>0) / max(1, sum(1 for r in tokens.values() if r['delta_sol']>0)),
+               'pnl_loss': sum(r['delta_sol'] for r in tokens.values() if r['delta_sol']<0),
+               'balance_change': (sum(r['delta_sol'] for r in tokens.values()) / ((balance - sum(r['delta_sol'] for r in tokens.values())) or 1) * 100),
+               'winrate': sum(1 for r in tokens.values() if r['delta_sol']>0) / max(1, sum(1 for r in tokens.values() if abs(r['delta_sol'])>0)) * 100,
+               'time_period':'30 days','sol_price':SOL_PRICE}
+    return tokens, summary
 
-    # Подсчет объема торгов через Dexscreener (если передан dex_pair_id)
-    spend_sol = get_spend_sol(dex_pair_id) if dex_pair_id else 0.0
+# Excel report
 
-    return {
-        'address': address,
-        'total_transactions': total_tx,
-        'sent_sol': sent,
-        'received_sol': received,
-        'spend_sol': spend_sol
-    }
+def generate_excel(wallet, tokens, summary):
+    fn = f"{wallet}_report.xlsx"; wb = Workbook(); ws = wb.active; ws.title = "ArGhost table"
+    hdr = ['Wallet','WinRate','PnL R','Avg Win %','PnL Loss','Balance change','TimePeriod','SOL Price Now','Balance']
+    for i,t in enumerate(hdr,1): ws.cell(1,i,t)
+    vals = [wallet, f"{summary['winrate']:.2f}%", f"{summary['pnl']:.2f} SOL", f"{summary['avg_win_pct']:.2f}%", f"{summary['pnl_loss']:.2f} SOL", f"{summary['balance_change']:.2f}%", summary['time_period'], f"{summary['sol_price']} $", f"{summary['balance']:.2f} SOL"]
+    for i,v in enumerate(vals,1): ws.cell(2,i,v)
+    ws.cell(4,1,'Tokens entry MCAP:'); ranges=['<5k','5k-30k','30k-100k','100k-300k','300k+']
+    for i,r in enumerate(ranges,2): ws.cell(5,i,r)
+    cols = ['Token','Spent SOL','Earned SOL','Delta Sol','Delta %','Buys','Sells','Last trade','Income','Outcome','Fee','Period','First buy Mcap','Last tx Mcap','Current Mcap','Contract','Dexscreener','Photon']
+    for i,c in enumerate(cols,1): ws.cell(8,i,c)
+    r=9
+    for rec in tokens.values():
+        ws.cell(r,1,rec['symbol']); ws.cell(r,2,f"{rec['spent_sol']:.2f} SOL"); ws.cell(r,3,f"{rec['earned_sol']:.2f} SOL"); ws.cell(r,4,f"{rec['delta_sol']:.2f}"); ws.cell(r,5,f"{rec['delta_pct']:.2f}%"); ws.cell(r,6,rec['buys']); ws.cell(r,7,rec['sells']);
+        if rec['last_trade']: ws.cell(r,8,rec['last_trade'].strftime('%d.%m.%Y'))
+        ws.cell(r,9,rec['in_tokens']); ws.cell(r,10,rec['out_tokens']); ws.cell(r,11,f"{rec['fee']:.2f}"); ws.cell(r,12,rec['period']); ws.cell(r,13,rec['first_mcap']); ws.cell(r,14,rec['last_mcap']); ws.cell(r,15,rec['current_mcap']); ws.cell(r,16,rec['mint']);
+        d=ws.cell(r,17); d.value='View trades'; d.hyperlink=f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}"; p=ws.cell(r,18); p.value='View trades'; p.hyperlink=f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"
+        r+=1
+    wb.save(fn); return fn
 
-# Обработка команды /analyze
-@bot.message_handler(commands=['analyze'])
-def cmd_analyze(message):
-    parts = message.text.split()
-    if len(parts) not in (2, 3):
-        bot.reply_to(message, "Использование: /analyze <wallet_address> [dex_pair_id]")
-        return
+# Handlers
 
-    address = parts[1]
-    dex_pair_id = parts[2] if len(parts) == 3 else None
+def welcome(m): bot.reply_to(m,"Привет! Отправь Solana-адрес.")
+bot.register_message_handler(welcome, commands=['start'])
 
-    bot.send_message(message.chat.id, "Запускаю анализ, пожалуйста подождите...")
-    stats = analyze_wallet(address, dex_pair_id)
+def handle(m): wallet=m.text.strip(); bot.reply_to(m,"Обрабатываю..."); tokens,summary=analyze_wallet(wallet); f=generate_excel(wallet,tokens,summary); bot.send_document(m.chat.id, open(f,'rb'))
+bot.register_message_handler(handle, func=lambda _: True)
 
-    # Формируем Excel-отчет
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Wallet Analysis"
-    ws.append(["Параметр", "Значение"])
-    for key, value in stats.items():
-        ws.append([key, value])
-
-    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    filename = f"wallet_analysis_{address}_{timestamp}.xlsx"
-    wb.save(filename)
-
-    # Отправляем файл пользователю
-    with open(filename, 'rb') as doc:
-        bot.send_document(message.chat.id, doc)
-
-# Запуск Flask-приложения
-if __name__ == '__main__':
-    port = int(os.getenv('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+# Run app
+def main(): app.run(host='0.0.0.0', port=int(os.environ.get('PORT',5000)))
+if __name__=='__main__': main()
