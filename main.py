@@ -118,7 +118,6 @@ def analyze_wallet(wallet):
     # Collect token transfer info
     for tx in txs:
         ts = datetime.fromtimestamp(tx.get('timestamp', 0))
-        # calculate only SOL received for sells
         sol_earned = 0.0
         for nt in tx.get('nativeTransfers', []):
             if nt.get('toUserAccount') == wallet:
@@ -149,7 +148,6 @@ def analyze_wallet(wallet):
             if direction == 'buy':
                 rec['buys'] += 1
                 rec['in_tokens'] += amt
-                # spent_sol will be recalculated via DEX
                 if not rec['first_ts']:
                     rec['first_ts'] = ts
                     rec['first_mcap'] = get_historical_mcap(mint, ts)
@@ -260,9 +258,12 @@ def handle(m):
     bot.send_document(m.chat.id, open(f, 'rb'))
 bot.register_message_handler(handle, func=lambda _: True)
 
-# Run app
-def main():
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT',5000)))
-
+# Test specific mint spend
 if __name__ == '__main__':
-    main()
+    # Debug: check spend for specific mint and wallet
+    test_mint = "6aaf35zf8byn3bdc2kvcneaygiqjjrdhbtdptn7y6gr"
+    test_wallet = "7ajzTPBLuHDEe9pX3txVn32UnFQaEuZsUe9BkBzg1s4P"
+    spend = get_spent_via_dexscreener(test_mint, test_wallet)
+    print(f"Spent SOL for mint {test_mint} by wallet {test_wallet}: {spend:.4f} SOL")
+    # Run the app server
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT',5000)))
