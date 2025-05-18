@@ -6,4 +6,8 @@ services:
     startCommand: "python main.py"
     envVars:
       - key: BOT_TOKEN
-        value: 
+        value: your_new_bot_token_here
+      - key: HELIUS_API_KEY
+        value: your_helius_api_key_here
+      - key: WEBHOOK_URL
+        value: https://your-app.onrender.com
