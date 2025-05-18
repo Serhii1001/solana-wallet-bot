@@ -1,4 +1,3 @@
-
 import os
 import requests
 import telebot
@@ -45,21 +44,6 @@ def safe_request(url, params=None):
             continue
     return {}
 
-# DEX Screener helper
-def get_spent_sol_on_pair(pair_id, maker_address):
-    """Returns total SOL spent on buy trades for given pair and maker address."""
-    data = safe_request(f"https://api.dexscreener.com/latest/dex/pairs/solana/{pair_id}")
-    pairs = data.get("pairs") or []
-    if not pairs:
-        return 0.0
-    trades = pairs[0].get("trades", [])
-    total_spent = sum(
-        float(tr.get("quoteAmount", 0))
-        for tr in trades
-        if tr.get("maker") == maker_address and tr.get("side") == "buy"
-    )
-    return total_spent
-
 # Helpers
 
 def get_symbol(mint):
@@ -93,38 +77,27 @@ def format_duration(start, end):
 
 # Core logic
 
-
 def analyze_wallet(wallet):
-    url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=1000"
-    txs = safe_request(url)
-
+    txs = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100") or []
+    bal = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/balances?api-key={HELIUS_API_KEY}")
+    balance = bal.get('nativeBalance', 0) / 1e9
     tokens = {}
-    balance_data = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/balances?api-key={HELIUS_API_KEY}")
-    balance = balance_data.get("nativeBalance", 0) / 1e9
-
     for tx in txs:
-        ts = datetime.fromtimestamp(tx.get("timestamp", 0))
-        fee = tx.get("fee", 0) / 1e9
-        sol_spent = sol_earned = 0
-
-        for nt in tx.get("nativeTransfers", []):
-            amount = nt.get("amount", 0) / 1e9
-            if nt.get("fromUserAccount") == wallet:
+        ts = datetime.fromtimestamp(tx.get('timestamp', 0))
+        sol_spent = sol_earned = 0.0
+        for nt in tx.get('nativeTransfers', []):
+            amount = nt.get('amount', 0) / 1e9
+            if nt.get('fromUserAccount') == wallet:
                 sol_spent += amount
-            if nt.get("toUserAccount") == wallet:
+            if nt.get('toUserAccount') == wallet:
                 sol_earned += amount
-
-        transfers = tx.get("tokenTransfers", [])
-        buys = [tr for tr in transfers if tr.get("toUserAccount") == wallet]
-        sells = [tr for tr in transfers if tr.get("fromUserAccount") == wallet]
-
-        total_buy_amt = sum(float(tr.get("tokenAmount", 0)) / (10 ** tr.get("decimals", 0)) for tr in buys)
-
-        for tr in buys + sells:
-            mint = tr.get("mint")
-            amt = float(tr.get("tokenAmount", 0)) / (10 ** tr.get("decimals", 0))
-            direction = 'buy' if tr in buys else 'sell'
-
+        seen = set()
+        for tr in tx.get('tokenTransfers', []):
+            mint = tr.get('mint')
+            amt = float(tr.get('tokenAmount', 0)) / (10 ** tr.get('decimals', 0))
+            direction = 'buy' if tr.get('toUserAccount') == wallet else 'sell' if tr.get('fromUserAccount') == wallet else None
+            if not direction:
+                continue
             rec = tokens.setdefault(mint, {
                 'mint': mint,
                 'symbol': get_symbol(mint),
@@ -141,12 +114,11 @@ def analyze_wallet(wallet):
                 'last_mcap': '',
                 'current_mcap': ''
             })
-
+            # Count every transfer as one trade
             if direction == 'buy':
-                share = amt / total_buy_amt if total_buy_amt else 0
                 rec['buys'] += 1
                 rec['in_tokens'] += amt
-                rec['spent_sol'] += sol_spent * share
+                rec['spent_sol'] += sol_spent
                 if not rec['first_ts']:
                     rec['first_ts'] = ts
                     rec['first_mcap'] = get_historical_mcap(mint, ts)
@@ -156,30 +128,21 @@ def analyze_wallet(wallet):
                 rec['earned_sol'] += sol_earned
                 rec['last_ts'] = ts
                 rec['last_mcap'] = get_historical_mcap(mint, ts)
-
-            rec['fee'] += fee
-
+            rec['fee'] += tx.get('fee', 0) / 1e9
     for rec in tokens.values():
         rec['delta_sol'] = rec['earned_sol'] - rec['spent_sol']
         rec['delta_pct'] = (rec['delta_sol'] / rec['spent_sol'] * 100) if rec['spent_sol'] else 0
         rec['period'] = format_duration(rec['first_ts'], rec['last_ts'])
         rec['last_trade'] = rec['last_ts'] or rec['first_ts']
         rec['current_mcap'] = get_current_mcap(rec['mint'])
-
-    summary = {
-        'wallet': wallet,
-        'balance': balance,
-        'pnl': sum(r['delta_sol'] for r in tokens.values()),
-        'avg_win_pct': sum(r['delta_pct'] for r in tokens.values() if r['delta_sol'] > 0) / max(1, sum(1 for r in tokens.values() if r['delta_sol'] > 0)),
-        'pnl_loss': sum(r['delta_sol'] for r in tokens.values() if r['delta_sol'] < 0),
-        'balance_change': (sum(r['delta_sol'] for r in tokens.values()) / ((balance - sum(r['delta_sol'] for r in tokens.values())) or 1) * 100),
-        'winrate': sum(1 for r in tokens.values() if r['delta_sol'] > 0) / max(1, sum(1 for r in tokens.values() if abs(r['delta_sol']) > 0)) * 100,
-        'time_period': '30 days',
-        'sol_price': SOL_PRICE
-    }
-
+    summary = {'wallet': wallet, 'balance': balance,
+               'pnl': sum(r['delta_sol'] for r in tokens.values()),
+               'avg_win_pct': sum(r['delta_pct'] for r in tokens.values() if r['delta_sol']>0) / max(1, sum(1 for r in tokens.values() if r['delta_sol']>0)),
+               'pnl_loss': sum(r['delta_sol'] for r in tokens.values() if r['delta_sol']<0),
+               'balance_change': (sum(r['delta_sol'] for r in tokens.values()) / ((balance - sum(r['delta_sol'] for r in tokens.values())) or 1) * 100),
+               'winrate': sum(1 for r in tokens.values() if r['delta_sol']>0) / max(1, sum(1 for r in tokens.values() if abs(r['delta_sol'])>0)) * 100,
+               'time_period':'30 days','sol_price':SOL_PRICE}
     return tokens, summary
-
 
 # Excel report
 
@@ -207,25 +170,8 @@ def generate_excel(wallet, tokens, summary):
 def welcome(m): bot.reply_to(m,"Привет! Отправь Solana-адрес.")
 bot.register_message_handler(welcome, commands=['start'])
 
-def handle(m): 
-    wallet=m.text.strip()
-    bot.reply_to(m,"Обрабатываю...")
-    tokens,summary=analyze_wallet(wallet)
-    f=generate_excel(wallet,tokens,summary)
-    bot.send_document(m.chat.id, open(f,'rb'))
+def handle(m): wallet=m.text.strip(); bot.reply_to(m,"Обрабатываю..."); tokens,summary=analyze_wallet(wallet); f=generate_excel(wallet,tokens,summary); bot.send_document(m.chat.id, open(f,'rb'))
 bot.register_message_handler(handle, func=lambda _: True)
-
-# Command to calculate SOL spent via DEX Screener
-@bot.message_handler(commands=['spend'])
-def handle_spend(m):
-    parts = m.text.split()
-    if len(parts) != 3:
-        bot.reply_to(m, "Usage: /spend <pair_id> <maker_address>")
-        return
-    _, pair_id, maker = parts
-    bot.reply_to(m, "Calculating spent SOL...")
-    spent = get_spent_sol_on_pair(pair_id, maker)
-    bot.send_message(m.chat.id, f"Total SOL spent on pair {pair_id}: {spent:.4f} SOL")
 
 # Run app
 def main(): app.run(host='0.0.0.0', port=int(os.environ.get('PORT',5000)))
