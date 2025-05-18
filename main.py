@@ -78,71 +78,96 @@ def format_duration(start, end):
 # Core logic
 
 def analyze_wallet(wallet):
-    txs = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100") or []
+    url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=1000&type=SWAP"
+    txs = safe_request(url) or []
     bal = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/balances?api-key={HELIUS_API_KEY}")
     balance = bal.get('nativeBalance', 0) / 1e9
+
     tokens = {}
+
     for tx in txs:
         ts = datetime.fromtimestamp(tx.get('timestamp', 0))
-        sol_spent = sol_earned = 0.0
-        for nt in tx.get('nativeTransfers', []):
-            amount = nt.get('amount', 0) / 1e9
-            if nt.get('fromUserAccount') == wallet:
-                sol_spent += amount
-            if nt.get('toUserAccount') == wallet:
-                sol_earned += amount
-        seen = set()
-        for tr in tx.get('tokenTransfers', []):
-            mint = tr.get('mint')
-            amt = float(tr.get('tokenAmount', 0)) / (10 ** tr.get('decimals', 0))
-            direction = 'buy' if tr.get('toUserAccount') == wallet else 'sell' if tr.get('fromUserAccount') == wallet else None
-            if not direction:
-                continue
-            rec = tokens.setdefault(mint, {
-                'mint': mint,
-                'symbol': get_symbol(mint),
-                'spent_sol': 0,
-                'earned_sol': 0,
-                'buys': 0,
-                'sells': 0,
-                'in_tokens': 0,
-                'out_tokens': 0,
-                'fee': 0,
-                'first_ts': None,
-                'last_ts': None,
-                'first_mcap': '',
-                'last_mcap': '',
-                'current_mcap': ''
-            })
-            # Count every transfer as one trade
-            if direction == 'buy':
-                rec['buys'] += 1
-                rec['in_tokens'] += amt
-                rec['spent_sol'] += sol_spent
-                if not rec['first_ts']:
-                    rec['first_ts'] = ts
-                    rec['first_mcap'] = get_historical_mcap(mint, ts)
+        events = tx.get("events", {})
+        swap = events.get("swap", {})
+
+        if not swap or not swap.get("tokenInputs") or not swap.get("tokenOutputs"):
+            continue
+
+        # Считаем потраченный и полученный токен
+        for inp in swap["tokenInputs"]:
+            mint_in = inp["mint"]
+            amount_in = float(inp["rawTokenAmount"]["tokenAmount"]) / (10 ** inp["rawTokenAmount"]["decimals"])
+            if mint_in == "So11111111111111111111111111111111111111112":
+                sol_spent = amount_in
             else:
-                rec['sells'] += 1
-                rec['out_tokens'] += amt
-                rec['earned_sol'] += sol_earned
-                rec['last_ts'] = ts
-                rec['last_mcap'] = get_historical_mcap(mint, ts)
-            rec['fee'] += tx.get('fee', 0) / 1e9
+                token_spent = amount_in
+
+        for out in swap["tokenOutputs"]:
+            mint_out = out["mint"]
+            amount_out = float(out["rawTokenAmount"]["tokenAmount"]) / (10 ** out["rawTokenAmount"]["decimals"])
+            if mint_out == "So11111111111111111111111111111111111111112":
+                sol_earned = amount_out
+            else:
+                token_earned = amount_out
+                token_mint = mint_out
+
+        if not token_mint:
+            continue
+
+        rec = tokens.setdefault(token_mint, {
+            'mint': token_mint,
+            'symbol': get_symbol(token_mint),
+            'spent_sol': 0,
+            'earned_sol': 0,
+            'buys': 0,
+            'sells': 0,
+            'in_tokens': 0,
+            'out_tokens': 0,
+            'fee': 0,
+            'first_ts': None,
+            'last_ts': None,
+            'first_mcap': '',
+            'last_mcap': '',
+            'current_mcap': ''
+        })
+
+        if sol_spent:
+            rec['spent_sol'] += sol_spent
+            rec['in_tokens'] += token_earned
+            rec['buys'] += 1
+            if not rec['first_ts']:
+                rec['first_ts'] = ts
+                rec['first_mcap'] = get_historical_mcap(token_mint, ts)
+        elif sol_earned:
+            rec['earned_sol'] += sol_earned
+            rec['out_tokens'] += token_spent
+            rec['sells'] += 1
+            rec['last_ts'] = ts
+            rec['last_mcap'] = get_historical_mcap(token_mint, ts)
+
+        rec['fee'] += tx.get('fee', 0) / 1e9
+
     for rec in tokens.values():
         rec['delta_sol'] = rec['earned_sol'] - rec['spent_sol']
         rec['delta_pct'] = (rec['delta_sol'] / rec['spent_sol'] * 100) if rec['spent_sol'] else 0
         rec['period'] = format_duration(rec['first_ts'], rec['last_ts'])
         rec['last_trade'] = rec['last_ts'] or rec['first_ts']
         rec['current_mcap'] = get_current_mcap(rec['mint'])
-    summary = {'wallet': wallet, 'balance': balance,
-               'pnl': sum(r['delta_sol'] for r in tokens.values()),
-               'avg_win_pct': sum(r['delta_pct'] for r in tokens.values() if r['delta_sol']>0) / max(1, sum(1 for r in tokens.values() if r['delta_sol']>0)),
-               'pnl_loss': sum(r['delta_sol'] for r in tokens.values() if r['delta_sol']<0),
-               'balance_change': (sum(r['delta_sol'] for r in tokens.values()) / ((balance - sum(r['delta_sol'] for r in tokens.values())) or 1) * 100),
-               'winrate': sum(1 for r in tokens.values() if r['delta_sol']>0) / max(1, sum(1 for r in tokens.values() if abs(r['delta_sol'])>0)) * 100,
-               'time_period':'30 days','sol_price':SOL_PRICE}
+
+    summary = {
+        'wallet': wallet,
+        'balance': balance,
+        'pnl': sum(r['delta_sol'] for r in tokens.values()),
+        'avg_win_pct': sum(r['delta_pct'] for r in tokens.values() if r['delta_sol'] > 0) / max(1, sum(1 for r in tokens.values() if r['delta_sol'] > 0)),
+        'pnl_loss': sum(r['delta_sol'] for r in tokens.values() if r['delta_sol'] < 0),
+        'balance_change': (sum(r['delta_sol'] for r in tokens.values()) / ((balance - sum(r['delta_sol'] for r in tokens.values())) or 1) * 100),
+        'winrate': sum(1 for r in tokens.values() if r['delta_sol'] > 0) / max(1, sum(1 for r in tokens.values() if abs(r['delta_sol']) > 0)) * 100,
+        'time_period': '30 days',
+        'sol_price': SOL_PRICE
+    }
+
     return tokens, summary
+
 
 # Excel report
 
