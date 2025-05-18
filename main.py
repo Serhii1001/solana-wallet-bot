@@ -166,12 +166,18 @@ def analyze_wallet(wallet):
 
             rec['fee'] += tx.get('fee', 0) / 1e9
 
-    return tokens, {
+    # Compute period for each token entry
+    for rec in tokens.values():
+        rec['period'] = format_duration(rec['first_ts'], rec['last_ts'])
+
+    # Build summary
+    summary = {
         'wallet': wallet,
         'balance': balance,
         'pnl': sum(r['earned_sol'] - r['spent_sol'] for r in tokens.values()),
         'avg_win_pct': (
-            sum((r['earned_sol'] - r['spent_sol']) / r['spent_sol'] * 100 for r in tokens.values() if r['earned_sol'] > r['spent_sol'])
+            sum((r['earned_sol'] - r['spent_sol']) / r['spent_sol'] * 100
+                for r in tokens.values() if r['earned_sol'] > r['spent_sol'])
             / max(1, sum(1 for r in tokens.values() if r['earned_sol'] > r['spent_sol']))
         ),
         'pnl_loss': sum(r['earned_sol'] - r['spent_sol'] for r in tokens.values() if r['earned_sol'] < r['spent_sol']),
@@ -186,6 +192,7 @@ def analyze_wallet(wallet):
         'time_period': '30 days',
         'sol_price': SOL_PRICE
     }
+    return tokens, summary
 
 # Excel report
 def generate_excel(wallet, tokens, summary):
@@ -243,7 +250,7 @@ def generate_excel(wallet, tokens, summary):
         ws.cell(r, 9, rec['in_tokens'])
         ws.cell(r, 10, rec['out_tokens'])
         ws.cell(r, 11, f"{rec['fee']:.2f}")
-        ws.cell(r, 12, rec['period'])
+        ws.cell(r, 12, rec.get('period', '-'))
         ws.cell(r, 13, rec['first_mcap'])
         ws.cell(r, 14, rec['last_mcap'])
         ws.cell(r, 15, rec['current_mcap'])
