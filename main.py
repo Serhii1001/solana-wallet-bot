@@ -188,7 +188,7 @@ def analyze_wallet(wallet):
 
 
 # Настройка логирования
-logging.basicConfig(filename="bot_debug.log", level=logging.INFO, format="%(asctime)s - %(message)s")
+    logging.basicConfig(filename="bot_debug.log", level=logging.INFO, format="%(asctime)s - %(message)s")
 
     for tx in txs:
     ts = datetime.fromtimestamp(tx.get('timestamp', 0))
