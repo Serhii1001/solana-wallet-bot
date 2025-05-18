@@ -11,27 +11,11 @@ HELIUS_API_KEY   = os.getenv("HELIUS_API_KEY")
 WEBHOOK_URL      = os.getenv("WEBHOOK_URL")  # e.g. https://your-app.onrender.com
 DEXSCREENER_BASE = "https://api.dexscreener.com/latest/dex/tokens/solana/"
 SOL_PRICE        = os.getenv("SOL_PRICE", "0")
+USE_POLLING      = os.getenv("USE_POLLING", "False").lower() in ("true", "1")
 
 # Initialize bot and app
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
 app = Flask(__name__)
-
-# Configure webhook (remove existing, then set new)
-bot.remove_webhook()
-bot.set_webhook(f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}")
-
-# Health-check endpoint
-def health_check():
-    return "OK", 200
-app.add_url_rule('/', 'health_check', health_check, methods=['GET'])
-
-# Telegram webhook endpoint
-def telegram_webhook():
-    data = request.get_data(as_text=True)
-    update = telebot.types.Update.de_json(data)
-    bot.process_new_updates([update])
-    return "OK", 200
-app.add_url_rule(f'/{TELEGRAM_TOKEN}', 'telegram_webhook', telegram_webhook, methods=['POST'])
 
 # HTTP helper
 def safe_request(url, params=None):
@@ -42,7 +26,6 @@ def safe_request(url, params=None):
                 return r.json()
         except Exception as e:
             print(f"Request error: {e}")
-            continue
     return {}
 
 # Helpers
@@ -78,6 +61,7 @@ def get_raydium_pool_info(mint):
             }
     return {}
 
+# Format duration utility
 def format_duration(start, end):
     if not start or not end:
         return '-'
@@ -100,7 +84,7 @@ def analyze_wallet(wallet):
     ) or []
     bal = safe_request(
         f"https://api.helius.xyz/v0/addresses/{wallet}/balances?api-key={HELIUS_API_KEY}"
-    )
+    ) or {}
     balance = bal.get('nativeBalance', 0) / 1e9
     tokens = {}
 
@@ -144,12 +128,14 @@ def analyze_wallet(wallet):
 
             # Raydium data
             ray = get_raydium_pool_info(mint)
-            rec['ray_pool_id']      = ray.get('ray_pool_id', '')
-            rec['ray_base_reserve'] = ray.get('ray_base_reserve', 0)
-            rec['ray_quote_reserve']= ray.get('ray_quote_reserve', 0)
-            rec['ray_fee_rate']     = ray.get('ray_fee_rate', 0)
+            rec.update({
+                'ray_pool_id':       ray.get('ray_pool_id', ''),
+                'ray_base_reserve':  ray.get('ray_base_reserve', 0),
+                'ray_quote_reserve': ray.get('ray_quote_reserve', 0),
+                'ray_fee_rate':      ray.get('ray_fee_rate', 0)
+            })
 
-            # Count every transfer as one trade
+            # Count trade
             if direction == 'buy':
                 rec['buys']      += 1
                 rec['in_tokens'] += amt
@@ -166,29 +152,27 @@ def analyze_wallet(wallet):
 
             rec['fee'] += tx.get('fee', 0) / 1e9
 
-    # Compute period for each token entry
+    # Post-process tokens
     for rec in tokens.values():
-        rec['period'] = format_duration(rec['first_ts'], rec['last_ts'])
+        rec['delta_sol']    = rec.get('earned_sol', 0) - rec.get('spent_sol', 0)
+        rec['delta_pct']    = (rec['delta_sol'] / rec['spent_sol'] * 100) if rec['spent_sol'] else 0
+        rec['period']       = format_duration(rec['first_ts'], rec['last_ts'])
+        rec['last_trade']   = rec['last_ts'] or rec['first_ts']
+        rec['current_mcap'] = get_current_mcap(rec['mint'])
 
     # Build summary
+    pnl_total = sum(r['delta_sol'] for r in tokens.values())
+    wins = [r['delta_sol'] for r in tokens.values() if r['delta_sol'] > 0]
+    losses = [r['delta_sol'] for r in tokens.values() if r['delta_sol'] < 0]
     summary = {
         'wallet': wallet,
         'balance': balance,
-        'pnl': sum(r['earned_sol'] - r['spent_sol'] for r in tokens.values()),
-        'avg_win_pct': (
-            sum((r['earned_sol'] - r['spent_sol']) / r['spent_sol'] * 100
-                for r in tokens.values() if r['earned_sol'] > r['spent_sol'])
-            / max(1, sum(1 for r in tokens.values() if r['earned_sol'] > r['spent_sol']))
-        ),
-        'pnl_loss': sum(r['earned_sol'] - r['spent_sol'] for r in tokens.values() if r['earned_sol'] < r['spent_sol']),
-        'balance_change': (
-            sum(r['earned_sol'] - r['spent_sol'] for r in tokens.values())
-            / ((balance - sum(r['earned_sol'] - r['spent_sol'] for r in tokens.values())) or 1) * 100
-        ),
-        'winrate': (
-            sum(1 for r in tokens.values() if (r['earned_sol'] - r['spent_sol']) > 0)
-            / max(1, sum(1 for r in tokens.values() if abs(r['earned_sol'] - r['spent_sol']) > 0)) * 100
-        ),
+        'pnl': pnl_total,
+        'avg_win_pct': (sum(r['delta_pct'] for r in tokens.values() if r['delta_sol']>0)
+                        / max(1, len(wins))),
+        'pnl_loss': sum(losses),
+        'balance_change': (pnl_total / ((balance - pnl_total) or 1) * 100),
+        'winrate': (len(wins) / max(1, len(wins) + len(losses)) * 100),
         'time_period': '30 days',
         'sol_price': SOL_PRICE
     }
@@ -201,101 +185,95 @@ def generate_excel(wallet, tokens, summary):
     ws = wb.active
     ws.title = "ArGhost table"
 
-    # Header rows
-    hdr = [
-        'Wallet','WinRate','PnL R','Avg Win %','PnL Loss',
-        'Balance change','TimePeriod','SOL Price Now','Balance'
-    ]
-    for i, t in enumerate(hdr, 1): ws.cell(1, i, t)
+    # Header
+    headers = ['Wallet','WinRate','PnL R','Avg Win %','PnL Loss',
+               'Balance change','TimePeriod','SOL Price Now','Balance']
+    for i, h in enumerate(headers, start=1): ws.cell(1, i, h)
+    values = [wallet, f"{summary['winrate']:.2f}%", f"{summary['pnl']:.2f} SOL",
+              f"{summary['avg_win_pct']:.2f}%", f"{summary['pnl_loss']:.2f} SOL",
+              f"{summary['balance_change']:.2f}%", summary['time_period'],
+              f"{summary['sol_price']} $", f"{summary['balance']:.2f} SOL"]
+    for i, v in enumerate(values, start=1): ws.cell(2, i, v)
 
-    vals = [
-        wallet,
-        f"{summary['winrate']:.2f}%",
-        f"{summary['pnl']:.2f} SOL",
-        f"{summary['avg_win_pct']:.2f}%",
-        f"{summary['pnl_loss']:.2f} SOL",
-        f"{summary['balance_change']:.2f}%",
-        summary['time_period'],
-        f"{summary['sol_price']} $",
-        f"{summary['balance']:.2f} SOL"
-    ]
-    for i, v in enumerate(vals, 1): ws.cell(2, i, v)
+    # Token table
+    cols = ['Token','Spent SOL','Earned SOL','Delta Sol','Delta %','Buys','Sells',
+            'Last trade','Income','Outcome','Fee','Period','First buy Mcap','Last tx Mcap',
+            'Current Mcap','Contract','Dexscreener','Photon',
+            'Ray Pool ID','Base Reserve','Quote Reserve','Fee Rate']
+    for i, c in enumerate(cols, start=1): ws.cell(8, i, c)
 
-    ws.cell(4, 1, 'Tokens entry MCAP:')
-    ranges = ['<5k','5k-30k','30k-100k','100k-300k','300k+']
-    for i, r in enumerate(ranges, 2): ws.cell(5, i, r)
-
-    # Token table header
-    cols = [
-        'Token','Spent SOL','Earned SOL','Delta Sol','Delta %','Buys','Sells',
-        'Last trade','Income','Outcome','Fee','Period','First buy Mcap','Last tx Mcap',
-        'Current Mcap','Contract','Dexscreener','Photon',
-        'Ray Pool ID','Base Reserve','Quote Reserve','Fee Rate'
-    ]
-    for i, c in enumerate(cols, 1): ws.cell(8, i, c)
-
-    # Fill rows
-    r = 9
-    for rec in tokens.values():
-        ws.cell(r, 1, rec['symbol'])
-        ws.cell(r, 2, f"{rec['spent_sol']:.2f} SOL")
-        ws.cell(r, 3, f"{rec['earned_sol']:.2f} SOL")
-        ws.cell(r, 4, f"{(rec['earned_sol']-rec['spent_sol']):.2f}")
-        delta_pct = ((rec['earned_sol']-rec['spent_sol']) / rec['spent_sol'] * 100) if rec['spent_sol'] else 0
-        ws.cell(r, 5, f"{delta_pct:.2f}%")
-        ws.cell(r, 6, rec['buys'])
-        ws.cell(r, 7, rec['sells'])
-        if rec.get('last_ts'):
-            ws.cell(r, 8, rec['last_ts'].strftime('%d.%m.%Y'))
-        ws.cell(r, 9, rec['in_tokens'])
-        ws.cell(r, 10, rec['out_tokens'])
-        ws.cell(r, 11, f"{rec['fee']:.2f}")
-        ws.cell(r, 12, rec.get('period', '-'))
-        ws.cell(r, 13, rec['first_mcap'])
-        ws.cell(r, 14, rec['last_mcap'])
-        ws.cell(r, 15, rec['current_mcap'])
-        ws.cell(r, 16, rec['mint'])
-        link1 = ws.cell(r, 17)
-        link1.value = 'View trades'
+    for row_idx, rec in enumerate(tokens.values(), start=9):
+        ws.cell(row_idx, 1, rec['symbol'])
+        ws.cell(row_idx, 2, f"{rec['spent_sol']:.2f} SOL")
+        ws.cell(row_idx, 3, f"{rec['earned_sol']:.2f} SOL")
+        ws.cell(row_idx, 4, f"{rec['delta_sol']:.2f}")
+        ws.cell(row_idx, 5, f"{rec['delta_pct']:.2f}%")
+        ws.cell(row_idx, 6, rec['buys'])
+        ws.cell(row_idx, 7, rec['sells'])
+        if rec['last_trade']: ws.cell(row_idx, 8, rec['last_trade'].strftime('%d.%m.%Y'))
+        ws.cell(row_idx, 9, rec['in_tokens'])
+        ws.cell(row_idx, 10, rec['out_tokens'])
+        ws.cell(row_idx, 11, f"{rec['fee']:.2f}")
+        ws.cell(row_idx, 12, rec['period'])
+        ws.cell(row_idx, 13, rec['first_mcap'])
+        ws.cell(row_idx, 14, rec['last_mcap'])
+        ws.cell(row_idx, 15, rec['current_mcap'])
+        ws.cell(row_idx, 16, rec['mint'])
+        # Hyperlinks
+        link1 = ws.cell(row_idx, 17)
+        link1.value = 'Dexscreener'
         link1.hyperlink = f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}"
-        link2 = ws.cell(r, 18)
-        link2.value = 'View trades'
+        link2 = ws.cell(row_idx, 18)
+        link2.value = 'Photon'
         link2.hyperlink = f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"
-
-        # Raydium fields
-        ws.cell(r, 19, rec.get('ray_pool_id', ''))
-        ws.cell(r, 20, f"{rec.get('ray_base_reserve', 0):.2f}")
-        ws.cell(r, 21, f"{rec.get('ray_quote_reserve', 0):.2f}")
-        ws.cell(r, 22, f"{rec.get('ray_fee_rate', 0):.2f}%")
-
-        r += 1
+        # Raydium
+        ws.cell(row_idx, 19, rec.get('ray_pool_id', ''))
+        ws.cell(row_idx, 20, f"{rec.get('ray_base_reserve',0):.2f}")
+        ws.cell(row_idx, 21, f"{rec.get('ray_quote_reserve',0):.2f}")
+        ws.cell(row_idx, 22, f"{rec.get('ray_fee_rate',0):.2f}%")
 
     wb.save(fn)
     return fn
 
-# Handlers
-def welcome(m):
-    bot.reply_to(m, "Привет! Отправь Solana-адрес.")
+# HTTP webhook for Telegram
+@app.route(f'/{TELEGRAM_TOKEN}', methods=['POST'])
+def telegram_webhook():
+    data = request.get_data(as_text=True)
+    print(f"Webhook received: {data}")
+    update = telebot.types.Update.de_json(data)
+    bot.process_new_updates([update])
+    return 'OK', 200
 
-@bot.message_handler(func=lambda message: True)
-def handle(m):
-    wallet = m.text.strip()
-    bot.reply_to(m, "Обрабатываю...")
+# Message handlers
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.send_message(message.chat.id, "Привет! Отправь Solana-адрес.")
+
+@bot.message_handler(func=lambda msg: True)
+def handle_message(message):
+    wallet = message.text.strip()
+    chat_id = message.chat.id
+    bot.send_message(chat_id, "Обрабатываю... 🛠️")
     try:
         tokens, summary = analyze_wallet(wallet)
         if not tokens:
-            bot.reply_to(m, "Не найдено сделок для этого адреса или произошла ошибка.")
+            bot.send_message(chat_id, "Не найдено сделок или произошла ошибка.")
             return
-        report_file = generate_excel(wallet, tokens, summary)
-        with open(report_file, 'rb') as doc:
-            bot.send_document(m.chat.id, doc)
+        report = generate_excel(wallet, tokens, summary)
+        with open(report, 'rb') as f:
+            bot.send_document(chat_id, f)
+        bot.send_message(chat_id, f"Готово, отчёт отправлен: {report}")
     except Exception as e:
-        print(f"Error handling wallet {wallet}: {e}")
-        bot.reply_to(m, f"Произошла ошибка при обработке: {e}")
+        print(f"Error processing {wallet}: {e}")
+        bot.send_message(chat_id, f"Ошибка при обработке: {e}")
 
-# Run app
-def main():
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-
+# Run server or polling
 if __name__ == '__main__':
-    main()
+    if USE_POLLING:
+        print("Starting bot with polling mode...")
+        bot.remove_webhook()
+        bot.polling(non_stop=True)
+    else:
+        # webhook mode
+        print("Starting Flask server for webhook mode...")
+        app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
