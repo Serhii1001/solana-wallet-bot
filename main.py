@@ -91,50 +91,50 @@ import logging
 logging.basicConfig(filename="bot_debug.log", level=logging.INFO, format="%(asctime)s - %(message)s")
 
     for tx in txs:
-        ts = datetime.fromtimestamp(tx.get('timestamp', 0))
-        events = tx.get("events", {})
-        swap = events.get("swap", {})
+    ts = datetime.fromtimestamp(tx.get('timestamp', 0))
+    events = tx.get("events", {})
+    swap = events.get("swap", {})
 
-        if not swap:
-            logging.info(f"Пропущен tx без swap: {tx.get('signature')}")
-            continue
+    if not swap:
+    logging.info(f"Пропущен tx без swap: {tx.get('signature')}")
+    continue
 
-        inputs = swap.get("tokenInputs", [])
-        outputs = swap.get("tokenOutputs", [])
+    inputs = swap.get("tokenInputs", [])
+    outputs = swap.get("tokenOutputs", [])
 
-        if not inputs or not outputs:
-            logging.info(f"tx без inputs/outputs: {tx.get('signature')}")
-            continue
+    if not inputs or not outputs:
+    logging.info(f"tx без inputs/outputs: {tx.get('signature')}")
+    continue
 
-        sol_spent = sol_earned = 0.0
-        token_mint = None
-        token_earned = token_spent = 0.0
+    sol_spent = sol_earned = 0.0
+    token_mint = None
+    token_earned = token_spent = 0.0
 
         # Вычисляем входящий токен
-        for inp in inputs:
-            mint = inp["mint"]
-            amt = float(inp["rawTokenAmount"]["tokenAmount"]) / (10 ** inp["rawTokenAmount"]["decimals"])
-            if mint == "So11111111111111111111111111111111111111112":
-                sol_spent = amt
-            else:
-                token_spent = amt
-                token_mint = mint
+    for inp in inputs:
+    mint = inp["mint"]
+     amt = float(inp["rawTokenAmount"]["tokenAmount"]) / (10 ** inp["rawTokenAmount"]["decimals"])
+    if mint == "So11111111111111111111111111111111111111112":
+    sol_spent = amt
+    else:
+    token_spent = amt
+    token_mint = mint
 
         # Вычисляем выходящий токен
-        for out in outputs:
-            mint = out["mint"]
-            amt = float(out["rawTokenAmount"]["tokenAmount"]) / (10 ** out["rawTokenAmount"]["decimals"])
-            if mint == "So11111111111111111111111111111111111111112":
-                sol_earned = amt
-            else:
-                token_earned = amt
-                token_mint = mint or token_mint
+    for out in outputs:
+    mint = out["mint"]
+    amt = float(out["rawTokenAmount"]["tokenAmount"]) / (10 ** out["rawTokenAmount"]["decimals"])
+    if mint == "So11111111111111111111111111111111111111112":
+    sol_earned = amt
+    else:
+    token_earned = amt
+    token_mint = mint or token_mint
 
-        if not token_mint:
-            logging.warning(f"Пропущен tx без токена: {tx.get('signature')}")
-            continue
+    if not token_mint:
+    logging.warning(f"Пропущен tx без токена: {tx.get('signature')}")
+    continue
 
-        rec = tokens.setdefault(token_mint, {
+    rec = tokens.setdefault(token_mint, {
             'mint': token_mint,
             'symbol': get_symbol(token_mint),
             'spent_sol': 0,
