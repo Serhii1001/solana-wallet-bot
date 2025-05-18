@@ -7,10 +7,10 @@ from openpyxl import Workbook
 
 # Configuration
 TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
-HELIUS_API_KEY  = os.getenv("HELIUS_API_KEY")
-WEBHOOK_URL     = os.getenv("WEBHOOK_URL")  # e.g. https://your-app.onrender.com
-DEXSCREENER_BASE= "https://api.dexscreener.com/latest/dex/tokens/solana/"
-SOL_PRICE       = os.getenv("SOL_PRICE", "0")
+HELIUS_API_KEY   = os.getenv("HELIUS_API_KEY")
+WEBHOOK_URL      = os.getenv("WEBHOOK_URL")  # e.g. https://your-app.onrender.com
+DEXSCREENER_BASE = "https://api.dexscreener.com/latest/dex/tokens/solana/"
+SOL_PRICE        = os.getenv("SOL_PRICE", "0")
 
 # Initialize bot and app
 bot = telebot.TeleBot(TELEGRAM_TOKEN)
@@ -40,7 +40,8 @@ def safe_request(url, params=None):
             r = requests.get(url, params=params, timeout=10)
             if r.status_code == 200:
                 return r.json()
-        except:
+        except Exception as e:
+            print(f"Request error: {e}")
             continue
     return {}
 
@@ -64,7 +65,6 @@ def get_current_mcap(mint):
     return safe_request(f"{DEXSCREENER_BASE}{mint}").get('stats', {}).get('marketCap', '')
 
 # Raydium integration
-# Fetch Raydium pools list and extract relevant pool info by token mint
 def get_raydium_pool_info(mint):
     data = safe_request("https://api.raydium.io/v2/sdk/liquidity/mainnet.json") or {}
     pools = data.get('official', []) + data.get('unOfficial', [])
@@ -166,30 +166,26 @@ def analyze_wallet(wallet):
 
             rec['fee'] += tx.get('fee', 0) / 1e9
 
-    for rec in tokens.values():
-        rec['delta_sol']     = rec['earned_sol'] - rec['spent_sol']
-        rec['delta_pct']     = (rec['delta_sol'] / rec['spent_sol'] * 100) if rec['spent_sol'] else 0
-        rec['period']        = format_duration(rec['first_ts'], rec['last_ts'])
-        rec['last_trade']    = rec['last_ts'] or rec['first_ts']
-        rec['current_mcap']  = get_current_mcap(rec['mint'])
-
-    summary = {
+    return tokens, {
         'wallet': wallet,
         'balance': balance,
-        'pnl': sum(r['delta_sol'] for r in tokens.values()),
-        'avg_win_pct': sum(r['delta_pct'] for r in tokens.values() if r['delta_sol']>0)
-                       / max(1, sum(1 for r in tokens.values() if r['delta_sol']>0)),
-        'pnl_loss': sum(r['delta_sol'] for r in tokens.values() if r['delta_sol']<0),
-        'balance_change': (sum(r['delta_sol'] for r in tokens.values())
-                             / ((balance - sum(r['delta_sol'] for r in tokens.values())) or 1)
-                             * 100),
-        'winrate': (sum(1 for r in tokens.values() if r['delta_sol']>0)
-                     / max(1, sum(1 for r in tokens.values() if abs(r['delta_sol'])>0))
-                     * 100),
-        'time_period':'30 days',
-        'sol_price':SOL_PRICE
+        'pnl': sum(r['earned_sol'] - r['spent_sol'] for r in tokens.values()),
+        'avg_win_pct': (
+            sum((r['earned_sol'] - r['spent_sol']) / r['spent_sol'] * 100 for r in tokens.values() if r['earned_sol'] > r['spent_sol'])
+            / max(1, sum(1 for r in tokens.values() if r['earned_sol'] > r['spent_sol']))
+        ),
+        'pnl_loss': sum(r['earned_sol'] - r['spent_sol'] for r in tokens.values() if r['earned_sol'] < r['spent_sol']),
+        'balance_change': (
+            sum(r['earned_sol'] - r['spent_sol'] for r in tokens.values())
+            / ((balance - sum(r['earned_sol'] - r['spent_sol'] for r in tokens.values())) or 1) * 100
+        ),
+        'winrate': (
+            sum(1 for r in tokens.values() if (r['earned_sol'] - r['spent_sol']) > 0)
+            / max(1, sum(1 for r in tokens.values() if abs(r['earned_sol'] - r['spent_sol']) > 0)) * 100
+        ),
+        'time_period': '30 days',
+        'sol_price': SOL_PRICE
     }
-    return tokens, summary
 
 # Excel report
 def generate_excel(wallet, tokens, summary):
@@ -203,50 +199,67 @@ def generate_excel(wallet, tokens, summary):
         'Wallet','WinRate','PnL R','Avg Win %','PnL Loss',
         'Balance change','TimePeriod','SOL Price Now','Balance'
     ]
-    for i,t in enumerate(hdr,1): ws.cell(1,i,t)
+    for i, t in enumerate(hdr, 1): ws.cell(1, i, t)
 
     vals = [
-        wallet, f"{summary['winrate']:.2f}%", f"{summary['pnl']:.2f} SOL",
-        f"{summary['avg_win_pct']:.2f}%", f"{summary['pnl_loss']:.2f} SOL",
-        f"{summary['balance_change']:.2f}%", summary['time_period'],
-        f"{summary['sol_price']} $", f"{summary['balance']:.2f} SOL"
+        wallet,
+        f"{summary['winrate']:.2f}%",
+        f"{summary['pnl']:.2f} SOL",
+        f"{summary['avg_win_pct']:.2f}%",
+        f"{summary['pnl_loss']:.2f} SOL",
+        f"{summary['balance_change']:.2f}%",
+        summary['time_period'],
+        f"{summary['sol_price']} $",
+        f"{summary['balance']:.2f} SOL"
     ]
-    for i,v in enumerate(vals,1): ws.cell(2,i,v)
+    for i, v in enumerate(vals, 1): ws.cell(2, i, v)
 
-    ws.cell(4,1,'Tokens entry MCAP:')
-    ranges=['<5k','5k-30k','30k-100k','100k-300k','300k+']
-    for i,r in enumerate(ranges,2): ws.cell(5,i,r)
+    ws.cell(4, 1, 'Tokens entry MCAP:')
+    ranges = ['<5k','5k-30k','30k-100k','100k-300k','300k+']
+    for i, r in enumerate(ranges, 2): ws.cell(5, i, r)
 
     # Token table header
     cols = [
         'Token','Spent SOL','Earned SOL','Delta Sol','Delta %','Buys','Sells',
         'Last trade','Income','Outcome','Fee','Period','First buy Mcap','Last tx Mcap',
         'Current Mcap','Contract','Dexscreener','Photon',
-        'Ray Pool ID','Base Reserve','Quote Freeze','Fee Rate'
+        'Ray Pool ID','Base Reserve','Quote Reserve','Fee Rate'
     ]
-    for i,c in enumerate(cols,1): ws.cell(8,i,c)
+    for i, c in enumerate(cols, 1): ws.cell(8, i, c)
 
     # Fill rows
     r = 9
     for rec in tokens.values():
-        ws.cell(r,1,rec['symbol']); ws.cell(r,2,f"{rec['spent_sol']:.2f} SOL");
-        ws.cell(r,3,f"{rec['earned_sol']:.2f} SOL"); ws.cell(r,4,f"{rec['delta_sol']:.2f}");
-        ws.cell(r,5,f"{rec['delta_pct']:.2f}%"); ws.cell(r,6,rec['buys']); ws.cell(r,7,rec['sells']);
-        if rec['last_trade']: ws.cell(r,8,rec['last_trade'].strftime('%d.%m.%Y'))
-        ws.cell(r,9,rec['in_tokens']); ws.cell(r,10,rec['out_tokens']);
-        ws.cell(r,11,f"{rec['fee']:.2f}"); ws.cell(r,12,rec['period']);
-        ws.cell(r,13,rec['first_mcap']); ws.cell(r,14,rec['last_mcap']); ws.cell(r,15,rec['current_mcap']);
-        ws.cell(r,16,rec['mint']);
-        ws.cell(r,17).hyperlink = f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}";
-        ws.cell(r,17).value = 'View trades';
-        ws.cell(r,18).hyperlink = f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}";
-        ws.cell(r,18).value = 'View trades';
+        ws.cell(r, 1, rec['symbol'])
+        ws.cell(r, 2, f"{rec['spent_sol']:.2f} SOL")
+        ws.cell(r, 3, f"{rec['earned_sol']:.2f} SOL")
+        ws.cell(r, 4, f"{(rec['earned_sol']-rec['spent_sol']):.2f}")
+        delta_pct = ((rec['earned_sol']-rec['spent_sol']) / rec['spent_sol'] * 100) if rec['spent_sol'] else 0
+        ws.cell(r, 5, f"{delta_pct:.2f}%")
+        ws.cell(r, 6, rec['buys'])
+        ws.cell(r, 7, rec['sells'])
+        if rec.get('last_ts'):
+            ws.cell(r, 8, rec['last_ts'].strftime('%d.%m.%Y'))
+        ws.cell(r, 9, rec['in_tokens'])
+        ws.cell(r, 10, rec['out_tokens'])
+        ws.cell(r, 11, f"{rec['fee']:.2f}")
+        ws.cell(r, 12, rec['period'])
+        ws.cell(r, 13, rec['first_mcap'])
+        ws.cell(r, 14, rec['last_mcap'])
+        ws.cell(r, 15, rec['current_mcap'])
+        ws.cell(r, 16, rec['mint'])
+        link1 = ws.cell(r, 17)
+        link1.value = 'View trades'
+        link1.hyperlink = f"https://dexscreener.com/solana/{rec['mint']}?maker={wallet}"
+        link2 = ws.cell(r, 18)
+        link2.value = 'View trades'
+        link2.hyperlink = f"https://photon-sol.tinyastro.io/en/lp/{rec['mint']}"
 
         # Raydium fields
-        ws.cell(r,19, rec.get('ray_pool_id', ''))
-        ws.cell(r,20, f"{rec.get('ray_base_reserve',0):.2f}")
-        ws.cell(r,21, f"{rec.get('ray_quote_reserve',0):.2f}")
-        ws.cell(r,22, f"{rec.get('ray_fee_rate',0):.2f}%")
+        ws.cell(r, 19, rec.get('ray_pool_id', ''))
+        ws.cell(r, 20, f"{rec.get('ray_base_reserve', 0):.2f}")
+        ws.cell(r, 21, f"{rec.get('ray_quote_reserve', 0):.2f}")
+        ws.cell(r, 22, f"{rec.get('ray_fee_rate', 0):.2f}%")
 
         r += 1
 
@@ -255,17 +268,23 @@ def generate_excel(wallet, tokens, summary):
 
 # Handlers
 def welcome(m):
-    bot.reply_to(m,"Привет! Отправь Solana-адрес.")
-bot.register_message_handler(welcome, commands=['start'])
+    bot.reply_to(m, "Привет! Отправь Solana-адрес.")
 
+@bot.message_handler(func=lambda message: True)
 def handle(m):
     wallet = m.text.strip()
-    bot.reply_to(m,"Обрабатываю...")
-    tokens, summary = analyze_wallet(wallet)
-    f = generate_excel(wallet, tokens, summary)
-    bot.send_document(m.chat.id, open(f, 'rb'))
-
-bot.register_message_handler(handle, func=lambda _: True)
+    bot.reply_to(m, "Обрабатываю...")
+    try:
+        tokens, summary = analyze_wallet(wallet)
+        if not tokens:
+            bot.reply_to(m, "Не найдено сделок для этого адреса или произошла ошибка.")
+            return
+        report_file = generate_excel(wallet, tokens, summary)
+        with open(report_file, 'rb') as doc:
+            bot.send_document(m.chat.id, doc)
+    except Exception as e:
+        print(f"Error handling wallet {wallet}: {e}")
+        bot.reply_to(m, f"Произошла ошибка при обработке: {e}")
 
 # Run app
 def main():
