@@ -77,15 +77,115 @@ def format_duration(start, end):
 
 # Core logic
 
+import logging
+
 def analyze_wallet(wallet):
+    logging.basicConfig(filename="bot_debug.log", level=logging.INFO, format="%(asctime)s - %(message)s")
+
     url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=1000&type=SWAP"
     txs = safe_request(url) or []
+
     bal = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/balances?api-key={HELIUS_API_KEY}")
     balance = bal.get('nativeBalance', 0) / 1e9
 
     tokens = {}
 
-import logging
+    for tx in txs:
+        ts = datetime.fromtimestamp(tx.get('timestamp', 0))
+        events = tx.get("events", {})
+        swap = events.get("swap", {})
+
+        if not swap:
+            logging.info(f"Пропущен tx без swap: {tx.get('signature')}")
+            continue
+
+        inputs = swap.get("tokenInputs", [])
+        outputs = swap.get("tokenOutputs", [])
+
+        if not inputs or not outputs:
+            logging.info(f"tx без inputs/outputs: {tx.get('signature')}")
+            continue
+
+        sol_spent = sol_earned = 0.0
+        token_mint = None
+        token_earned = token_spent = 0.0
+
+        for inp in inputs:
+            mint = inp["mint"]
+            amt = float(inp["rawTokenAmount"]["tokenAmount"]) / (10 ** inp["rawTokenAmount"]["decimals"])
+            if mint == "So11111111111111111111111111111111111111112":
+                sol_spent = amt
+            else:
+                token_spent = amt
+                token_mint = mint
+
+        for out in outputs:
+            mint = out["mint"]
+            amt = float(out["rawTokenAmount"]["tokenAmount"]) / (10 ** out["rawTokenAmount"]["decimals"])
+            if mint == "So11111111111111111111111111111111111111112":
+                sol_earned = amt
+            else:
+                token_earned = amt
+                token_mint = mint or token_mint
+
+        if not token_mint:
+            logging.warning(f"Пропущен tx без токена: {tx.get('signature')}")
+            continue
+
+        rec = tokens.setdefault(token_mint, {
+            'mint': token_mint,
+            'symbol': get_symbol(token_mint),
+            'spent_sol': 0,
+            'earned_sol': 0,
+            'buys': 0,
+            'sells': 0,
+            'in_tokens': 0,
+            'out_tokens': 0,
+            'fee': 0,
+            'first_ts': None,
+            'last_ts': None,
+            'first_mcap': '',
+            'last_mcap': '',
+            'current_mcap': ''
+        })
+
+        if sol_spent > 0:
+            rec['spent_sol'] += sol_spent
+            rec['in_tokens'] += token_earned
+            rec['buys'] += 1
+            if not rec['first_ts']:
+                rec['first_ts'] = ts
+                rec['first_mcap'] = get_historical_mcap(token_mint, ts)
+        elif sol_earned > 0:
+            rec['earned_sol'] += sol_earned
+            rec['out_tokens'] += token_spent
+            rec['sells'] += 1
+            rec['last_ts'] = ts
+            rec['last_mcap'] = get_historical_mcap(token_mint, ts)
+
+        rec['fee'] += tx.get('fee', 0) / 1e9
+
+    for rec in tokens.values():
+        rec['delta_sol'] = rec['earned_sol'] - rec['spent_sol']
+        rec['delta_pct'] = (rec['delta_sol'] / rec['spent_sol'] * 100) if rec['spent_sol'] else 0
+        rec['period'] = format_duration(rec['first_ts'], rec['last_ts'])
+        rec['last_trade'] = rec['last_ts'] or rec['first_ts']
+        rec['current_mcap'] = get_current_mcap(rec['mint'])
+
+    summary = {
+        'wallet': wallet,
+        'balance': balance,
+        'pnl': sum(r['delta_sol'] for r in tokens.values()),
+        'avg_win_pct': sum(r['delta_pct'] for r in tokens.values() if r['delta_sol'] > 0) / max(1, sum(1 for r in tokens.values() if r['delta_sol'] > 0)),
+        'pnl_loss': sum(r['delta_sol'] for r in tokens.values() if r['delta_sol'] < 0),
+        'balance_change': (sum(r['delta_sol'] for r in tokens.values()) / ((balance - sum(r['delta_sol'] for r in tokens.values())) or 1) * 100),
+        'winrate': sum(1 for r in tokens.values() if r['delta_sol'] > 0) / max(1, sum(1 for r in tokens.values() if abs(r['delta_sol']) > 0)) * 100,
+        'time_period': '30 days',
+        'sol_price': SOL_PRICE
+    }
+
+    return tokens, summary
+
 
 # Настройка логирования
 logging.basicConfig(filename="bot_debug.log", level=logging.INFO, format="%(asctime)s - %(message)s")
