@@ -85,33 +85,53 @@ def analyze_wallet(wallet):
 
     tokens = {}
 
+import logging
+
+# Настройка логирования
+logging.basicConfig(filename="bot_debug.log", level=logging.INFO, format="%(asctime)s - %(message)s")
+
     for tx in txs:
         ts = datetime.fromtimestamp(tx.get('timestamp', 0))
         events = tx.get("events", {})
         swap = events.get("swap", {})
 
-        if not swap or not swap.get("tokenInputs") or not swap.get("tokenOutputs"):
+        if not swap:
+            logging.info(f"Пропущен tx без swap: {tx.get('signature')}")
             continue
 
-        # Считаем потраченный и полученный токен
-        for inp in swap["tokenInputs"]:
-            mint_in = inp["mint"]
-            amount_in = float(inp["rawTokenAmount"]["tokenAmount"]) / (10 ** inp["rawTokenAmount"]["decimals"])
-            if mint_in == "So11111111111111111111111111111111111111112":
-                sol_spent = amount_in
-            else:
-                token_spent = amount_in
+        inputs = swap.get("tokenInputs", [])
+        outputs = swap.get("tokenOutputs", [])
 
-        for out in swap["tokenOutputs"]:
-            mint_out = out["mint"]
-            amount_out = float(out["rawTokenAmount"]["tokenAmount"]) / (10 ** out["rawTokenAmount"]["decimals"])
-            if mint_out == "So11111111111111111111111111111111111111112":
-                sol_earned = amount_out
+        if not inputs or not outputs:
+            logging.info(f"tx без inputs/outputs: {tx.get('signature')}")
+            continue
+
+        sol_spent = sol_earned = 0.0
+        token_mint = None
+        token_earned = token_spent = 0.0
+
+        # Вычисляем входящий токен
+        for inp in inputs:
+            mint = inp["mint"]
+            amt = float(inp["rawTokenAmount"]["tokenAmount"]) / (10 ** inp["rawTokenAmount"]["decimals"])
+            if mint == "So11111111111111111111111111111111111111112":
+                sol_spent = amt
             else:
-                token_earned = amount_out
-                token_mint = mint_out
+                token_spent = amt
+                token_mint = mint
+
+        # Вычисляем выходящий токен
+        for out in outputs:
+            mint = out["mint"]
+            amt = float(out["rawTokenAmount"]["tokenAmount"]) / (10 ** out["rawTokenAmount"]["decimals"])
+            if mint == "So11111111111111111111111111111111111111112":
+                sol_earned = amt
+            else:
+                token_earned = amt
+                token_mint = mint or token_mint
 
         if not token_mint:
+            logging.warning(f"Пропущен tx без токена: {tx.get('signature')}")
             continue
 
         rec = tokens.setdefault(token_mint, {
@@ -131,14 +151,14 @@ def analyze_wallet(wallet):
             'current_mcap': ''
         })
 
-        if sol_spent:
+        if sol_spent > 0:
             rec['spent_sol'] += sol_spent
             rec['in_tokens'] += token_earned
             rec['buys'] += 1
             if not rec['first_ts']:
                 rec['first_ts'] = ts
                 rec['first_mcap'] = get_historical_mcap(token_mint, ts)
-        elif sol_earned:
+        elif sol_earned > 0:
             rec['earned_sol'] += sol_earned
             rec['out_tokens'] += token_spent
             rec['sells'] += 1
