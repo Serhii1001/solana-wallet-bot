@@ -118,6 +118,7 @@ def analyze_wallet(wallet):
                 continue
 
             direction = 'buy' if tr.get('toUserAccount') == wallet else 'sell' if tr.get('fromUserAccount') == wallet else None
+            debug(f"↔️ from: {tr.get('fromUserAccount')} → to: {tr.get('toUserAccount')}")
             if direction is None:
                 debug(f"⚠️ Пропущено: не определено направление (from={tr.get('fromUserAccount')}, to={tr.get('toUserAccount')})")
                 continue
