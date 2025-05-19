@@ -77,7 +77,7 @@ def format_duration(start, end):
 
 # Core logic
 
-DEBUG_CHAT_ID = 1234567890123  # <-- замени на свой Telegram chat_id  # ЗАМЕНИ на свой chat_id
+DEBUG_CHAT_ID = 769361377  # <-- замени на свой Telegram chat_id  # ЗАМЕНИ на свой chat_id
 
 def welcome(m):
     bot.reply_to(m, f"Твой chat_id: {m.chat.id}")
