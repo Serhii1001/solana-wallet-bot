@@ -69,25 +69,40 @@ def format_duration(start, end):
     return f"{int(seconds)}s"
 
 def analyze_wallet(wallet):
+    print(f"📊 Анализируем кошелёк: {wallet}")
     url = f"https://api.helius.xyz/v0/addresses/{wallet}/enhanced-transactions?api-key={HELIUS_API_KEY}&limit=100"
     txs = safe_request(url) or []
+    print(f"Найдено транзакций: {len(txs)}")
+
     bal = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/balances?api-key={HELIUS_API_KEY}")
     balance = bal.get('nativeBalance', 0) / 1e9
     tokens = {}
+    added_tokens = 0
+
     for tx in txs:
         ts = datetime.fromtimestamp(tx.get('timestamp', 0))
+        sig = tx.get('signature', 'unknown')
+        print(f"\n📦 Транзакция {sig} @ {ts}")
         sol_change = sum(n.get('amount', 0) for n in tx.get('nativeTransfers', []) if n.get('fromUserAccount') == wallet) / 1e9
+
         for tr in tx.get('events', {}).get('tokenTransfers', []):
+            print(f"🪙 TokenTransfer: {tr}")
             mint = tr.get('mint')
             if not mint:
                 continue
+            print(f"🎯 Mint найден: {mint}")
+
             amt = float(tr.get('tokenAmount', {}).get('uiAmount', 0))
             decimals = tr.get('tokenAmount', {}).get('decimals', 0)
             if amt == 0:
+                print(f"⚠️ Пропущено: amount == 0")
                 continue
+
             direction = 'buy' if tr.get('toUserAccount') == wallet else 'sell' if tr.get('fromUserAccount') == wallet else None
-            if not direction:
+            if direction is None:
+                print(f"⚠️ Пропущено: не определено направление (from={tr.get('fromUserAccount')}, to={tr.get('toUserAccount')})")
                 continue
+
             rec = tokens.setdefault(mint, {
                 'mint': mint,
                 'symbol': get_symbol(mint),
@@ -104,6 +119,7 @@ def analyze_wallet(wallet):
                 'last_mcap': '',
                 'current_mcap': ''
             })
+
             if direction == 'buy':
                 rec['buys'] += 1
                 rec['in_tokens'] += amt
@@ -117,7 +133,10 @@ def analyze_wallet(wallet):
                 rec['earned_sol'] += sol_change
                 rec['last_ts'] = ts
                 rec['last_mcap'] = get_historical_mcap(mint, ts)
+
             rec['fee'] += tx.get('fee', 0) / 1e9
+            print(f"✅ Добавлено в {direction}: {amt} токенов, {sol_change:.4f} SOL")
+            added_tokens += 1
 
     for rec in tokens.values():
         rec['delta_sol'] = rec['earned_sol'] - rec['spent_sol']
@@ -137,6 +156,8 @@ def analyze_wallet(wallet):
         'time_period': '30 days',
         'sol_price': SOL_PRICE
     }
+
+    print(f"\n📈 Всего добавлено токенов в отчёт: {added_tokens}")
     return tokens, summary
 
 # Остальная часть кода (generate_excel, welcome, handle и main) остаётся прежней
