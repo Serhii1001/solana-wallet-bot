@@ -203,7 +203,6 @@ def generate_excel(wallet, tokens, summary):
 
 # Handlers
 
-def welcome(m): bot.reply_to(m,"Привет! Отправь Solana-адрес.")
 bot.register_message_handler(welcome, commands=['start'])
 
 def handle(m): wallet=m.text.strip(); bot.reply_to(m,"Обрабатываю..."); tokens,summary=analyze_wallet(wallet); f=generate_excel(wallet,tokens,summary); bot.send_document(m.chat.id, open(f,'rb'))
