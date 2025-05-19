@@ -82,7 +82,6 @@ DEBUG_CHAT_ID = 769361377  # <-- замени на свой Telegram chat_id  # 
 def welcome(m):
     bot.reply_to(m, f"Твой chat_id: {m.chat.id}")
 
-
 def debug(msg):
     try:
         bot.send_message(DEBUG_CHAT_ID, f"🪵 {msg}")
@@ -91,7 +90,7 @@ def debug(msg):
 
 def analyze_wallet(wallet):
     debug(f"Анализируем кошелёк: {wallet}")
-    url = f"https://api.helius.xyz/v0/addresses/{wallet}/enhanced-transactions?api-key={HELIUS_API_KEY}&limit=100"
+    url = f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100"
     txs = safe_request(url) or []
     debug(f"Найдено транзакций: {len(txs)}")
 
@@ -106,14 +105,14 @@ def analyze_wallet(wallet):
         debug(f"📦 Транзакция {sig} @ {ts}")
         sol_change = sum(n.get('amount', 0) for n in tx.get('nativeTransfers', []) if n.get('fromUserAccount') == wallet) / 1e9
 
-        for tr in tx.get('events', {}).get('tokenTransfers', []):
+        token_transfers = tx.get('tokenTransfers', [])
+        for tr in token_transfers:
             mint = tr.get('mint')
             if not mint:
                 continue
             debug(f"🎯 Mint найден: {mint}")
 
             amt = float(tr.get('tokenAmount', {}).get('uiAmount', 0))
-            decimals = tr.get('tokenAmount', {}).get('decimals', 0)
             if amt == 0:
                 debug(f"⚠️ Пропущено: amount == 0")
                 continue
