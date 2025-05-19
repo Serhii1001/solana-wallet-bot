@@ -77,27 +77,52 @@ def format_duration(start, end):
 
 # Core logic
 
+DEBUG_CHAT_ID = 1234567890123  # <-- замени на свой Telegram chat_id  # ЗАМЕНИ на свой chat_id
+
+def welcome(m):
+    bot.reply_to(m, f"Твой chat_id: {m.chat.id}")
+
+
+def debug(msg):
+    try:
+        bot.send_message(DEBUG_CHAT_ID, f"🪵 {msg}")
+    except:
+        pass
+
 def analyze_wallet(wallet):
-    txs = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/transactions?api-key={HELIUS_API_KEY}&limit=100") or []
+    debug(f"Анализируем кошелёк: {wallet}")
+    url = f"https://api.helius.xyz/v0/addresses/{wallet}/enhanced-transactions?api-key={HELIUS_API_KEY}&limit=100"
+    txs = safe_request(url) or []
+    debug(f"Найдено транзакций: {len(txs)}")
+
     bal = safe_request(f"https://api.helius.xyz/v0/addresses/{wallet}/balances?api-key={HELIUS_API_KEY}")
     balance = bal.get('nativeBalance', 0) / 1e9
     tokens = {}
+    added_tokens = 0
+
     for tx in txs:
         ts = datetime.fromtimestamp(tx.get('timestamp', 0))
-        sol_spent = sol_earned = 0.0
-        for nt in tx.get('nativeTransfers', []):
-            amount = nt.get('amount', 0) / 1e9
-            if nt.get('fromUserAccount') == wallet:
-                sol_spent += amount
-            if nt.get('toUserAccount') == wallet:
-                sol_earned += amount
-        seen = set()
-        for tr in tx.get('tokenTransfers', []):
+        sig = tx.get('signature', 'unknown')
+        debug(f"📦 Транзакция {sig} @ {ts}")
+        sol_change = sum(n.get('amount', 0) for n in tx.get('nativeTransfers', []) if n.get('fromUserAccount') == wallet) / 1e9
+
+        for tr in tx.get('events', {}).get('tokenTransfers', []):
             mint = tr.get('mint')
-            amt = float(tr.get('tokenAmount', 0)) / (10 ** tr.get('decimals', 0))
-            direction = 'buy' if tr.get('toUserAccount') == wallet else 'sell' if tr.get('fromUserAccount') == wallet else None
-            if not direction:
+            if not mint:
                 continue
+            debug(f"🎯 Mint найден: {mint}")
+
+            amt = float(tr.get('tokenAmount', {}).get('uiAmount', 0))
+            decimals = tr.get('tokenAmount', {}).get('decimals', 0)
+            if amt == 0:
+                debug(f"⚠️ Пропущено: amount == 0")
+                continue
+
+            direction = 'buy' if tr.get('toUserAccount') == wallet else 'sell' if tr.get('fromUserAccount') == wallet else None
+            if direction is None:
+                debug(f"⚠️ Пропущено: не определено направление (from={tr.get('fromUserAccount')}, to={tr.get('toUserAccount')})")
+                continue
+
             rec = tokens.setdefault(mint, {
                 'mint': mint,
                 'symbol': get_symbol(mint),
@@ -114,34 +139,45 @@ def analyze_wallet(wallet):
                 'last_mcap': '',
                 'current_mcap': ''
             })
-            # Count every transfer as one trade
+
             if direction == 'buy':
                 rec['buys'] += 1
                 rec['in_tokens'] += amt
-                rec['spent_sol'] += sol_spent
+                rec['spent_sol'] += sol_change
                 if not rec['first_ts']:
                     rec['first_ts'] = ts
                     rec['first_mcap'] = get_historical_mcap(mint, ts)
             else:
                 rec['sells'] += 1
                 rec['out_tokens'] += amt
-                rec['earned_sol'] += sol_earned
+                rec['earned_sol'] += sol_change
                 rec['last_ts'] = ts
                 rec['last_mcap'] = get_historical_mcap(mint, ts)
+
             rec['fee'] += tx.get('fee', 0) / 1e9
+            debug(f"✅ {direction}: {amt} токенов, {sol_change:.4f} SOL")
+            added_tokens += 1
+
     for rec in tokens.values():
         rec['delta_sol'] = rec['earned_sol'] - rec['spent_sol']
         rec['delta_pct'] = (rec['delta_sol'] / rec['spent_sol'] * 100) if rec['spent_sol'] else 0
         rec['period'] = format_duration(rec['first_ts'], rec['last_ts'])
         rec['last_trade'] = rec['last_ts'] or rec['first_ts']
         rec['current_mcap'] = get_current_mcap(rec['mint'])
-    summary = {'wallet': wallet, 'balance': balance,
-               'pnl': sum(r['delta_sol'] for r in tokens.values()),
-               'avg_win_pct': sum(r['delta_pct'] for r in tokens.values() if r['delta_sol']>0) / max(1, sum(1 for r in tokens.values() if r['delta_sol']>0)),
-               'pnl_loss': sum(r['delta_sol'] for r in tokens.values() if r['delta_sol']<0),
-               'balance_change': (sum(r['delta_sol'] for r in tokens.values()) / ((balance - sum(r['delta_sol'] for r in tokens.values())) or 1) * 100),
-               'winrate': sum(1 for r in tokens.values() if r['delta_sol']>0) / max(1, sum(1 for r in tokens.values() if abs(r['delta_sol'])>0)) * 100,
-               'time_period':'30 days','sol_price':SOL_PRICE}
+
+    summary = {
+        'wallet': wallet,
+        'balance': balance,
+        'pnl': sum(r['delta_sol'] for r in tokens.values()),
+        'avg_win_pct': sum(r['delta_pct'] for r in tokens.values() if r['delta_sol'] > 0) / max(1, sum(1 for r in tokens.values() if r['delta_sol'] > 0)),
+        'pnl_loss': sum(r['delta_sol'] for r in tokens.values() if r['delta_sol'] < 0),
+        'balance_change': (sum(r['delta_sol'] for r in tokens.values()) / ((balance - sum(r['delta_sol'] for r in tokens.values())) or 1) * 100),
+        'winrate': sum(1 for r in tokens.values() if r['delta_sol'] > 0) / max(1, sum(1 for r in tokens.values() if abs(r['delta_sol']) > 0)) * 100,
+        'time_period': '30 days',
+        'sol_price': SOL_PRICE
+    }
+
+    debug(f"📈 Всего добавлено токенов в отчёт: {added_tokens}")
     return tokens, summary
 
 # Excel report
