@@ -226,7 +226,6 @@ def handle(m):
         if os.path.exists(f):
             bot.send_document(m.chat.id, open(f, 'rb'))
         debug("📦 Файл отправлен успешно")
-            os.remove(f)
     except Exception as e:
         debug(f"❌ Ошибка при отправке файла: {e}")
 
