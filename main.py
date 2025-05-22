@@ -117,11 +117,11 @@ def analyze_wallet(wallet):
                 debug(f"⚠️ Пропущено: amount == 0")
                 continue
 
-            direction = None
-if wallet in [tr.get('toUserAccount'), tr.get('userAccount')]:
-    direction = 'buy'
-elif wallet in [tr.get('fromUserAccount')]:
-    direction = 'sell'
+                        direction = None
+            if wallet in [tr.get('toUserAccount'), tr.get('userAccount')]:
+                direction = 'buy'
+            elif wallet in [tr.get('fromUserAccount')]:
+                direction = 'sell'
 
             if direction is None:
                 debug(f"⚠️ Пропущено: не определено направление (from={tr.get('fromUserAccount')}, to={tr.get('toUserAccount')})")
@@ -183,6 +183,7 @@ elif wallet in [tr.get('fromUserAccount')]:
 
     debug(f"📈 Всего добавлено токенов в отчёт: {added_tokens}")
     return tokens, summary
+
 
 # Excel report
 
