@@ -161,6 +161,10 @@ def analyze_wallet(wallet):
 
             rec['fee'] += tx.get('fee', 0) / 1e9
             debug(f"✅ {direction}: {amt} токенов, {sol_change:.4f} SOL")
+debug(f"ℹ️ from={tr.get('fromUserAccount')} to={tr.get('toUserAccount')} owner={owner}")
+debug(f"🧪 tokenTransfer полный: {str(tr)}")
+rec['spent_sol'] = rec['spent_sol'] or 0.01  # временно для Excel
+rec['earned_sol'] = rec['earned_sol'] or 0.01
             added_tokens += 1
 
     for rec in tokens.values():
@@ -184,7 +188,6 @@ def analyze_wallet(wallet):
 
     debug(f"📈 Всего добавлено токенов в отчёт: {added_tokens}")
     return tokens, summary
-
 
 
 # Excel report
