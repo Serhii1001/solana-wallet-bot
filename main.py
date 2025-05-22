@@ -212,8 +212,9 @@ def generate_excel(wallet, tokens, summary):
 
 # Handlers
 
-@bot.message_handler(func=lambda m: True)
 bot.register_message_handler(welcome, commands=['start'])
+
+@bot.message_handler(func=lambda m: True)
 
 def handle(m):
     wallet = m.text.strip()
