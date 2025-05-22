@@ -117,14 +117,12 @@ def analyze_wallet(wallet):
                 debug(f"⚠️ Пропущено: amount == 0")
                 continue
 
-            direction = None
             owner = tr.get('tokenAmount', {}).get('owner', '')
             direction = None
             if wallet == owner and tr.get('toUserAccount') == owner:
                 direction = 'buy'
             elif wallet == owner and tr.get('fromUserAccount') == owner:
                 direction = 'sell'
-
 
             if direction is None:
                 debug(f"⚠️ Пропущено: не определено направление (from={tr.get('fromUserAccount')}, to={tr.get('toUserAccount')})")
@@ -186,6 +184,7 @@ def analyze_wallet(wallet):
 
     debug(f"📈 Всего добавлено токенов в отчёт: {added_tokens}")
     return tokens, summary
+
 
 
 # Excel report
