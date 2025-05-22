@@ -118,10 +118,13 @@ def analyze_wallet(wallet):
                 continue
 
             direction = None
-            if wallet in [tr.get('toUserAccount'), tr.get('userAccount')]:
+            owner = tr.get('tokenAmount', {}).get('owner', '')
+            direction = None
+            if wallet == owner and tr.get('toUserAccount') == owner:
                 direction = 'buy'
-            elif wallet in [tr.get('fromUserAccount')]:
+            elif wallet == owner and tr.get('fromUserAccount') == owner:
                 direction = 'sell'
+
 
             if direction is None:
                 debug(f"⚠️ Пропущено: не определено направление (from={tr.get('fromUserAccount')}, to={tr.get('toUserAccount')})")
