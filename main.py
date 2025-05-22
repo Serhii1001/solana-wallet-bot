@@ -214,8 +214,17 @@ def generate_excel(wallet, tokens, summary):
 
 bot.register_message_handler(welcome, commands=['start'])
 
-def handle(m): wallet=m.text.strip(); bot.reply_to(m,"Обрабатываю..."); tokens,summary=analyze_wallet(wallet); f=generate_excel(wallet,tokens,summary); bot.send_document(m.chat.id, open(f,'rb'))
-bot.register_message_handler(handle, func=lambda _: True)
+def handle(m):
+    wallet = m.text.strip()
+    bot.reply_to(m, "Обрабатываю...")
+    tokens, summary = analyze_wallet(wallet)
+    f = generate_excel(wallet, tokens, summary)
+    debug(f"📤 Генерируем Excel-файл для {wallet} с {len(tokens)} токенами")
+    try:
+        bot.send_document(m.chat.id, open(f, 'rb'))
+        debug("📦 Файл отправлен успешно")
+    except Exception as e:
+        debug(f"❌ Ошибка при отправке файла: {e}")
 
 # Run app
 def main(): app.run(host='0.0.0.0', port=int(os.environ.get('PORT',5000)))
