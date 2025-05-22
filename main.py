@@ -117,7 +117,7 @@ def analyze_wallet(wallet):
                 debug(f"⚠️ Пропущено: amount == 0")
                 continue
 
-                        direction = None
+                direction = None
             if wallet in [tr.get('toUserAccount'), tr.get('userAccount')]:
                 direction = 'buy'
             elif wallet in [tr.get('fromUserAccount')]:
