@@ -223,8 +223,10 @@ def handle(m):
     f = generate_excel(wallet, tokens, summary)
     debug(f"📤 Генерируем Excel-файл для {wallet} с {len(tokens)} токенами")
     try:
-        bot.send_document(m.chat.id, open(f, 'rb'))
+        if os.path.exists(f):
+            bot.send_document(m.chat.id, open(f, 'rb'))
         debug("📦 Файл отправлен успешно")
+            os.remove(f)
     except Exception as e:
         debug(f"❌ Ошибка при отправке файла: {e}")
 
