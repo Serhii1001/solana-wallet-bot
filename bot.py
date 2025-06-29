@@ -34,7 +34,7 @@ PERSONAS = {
     },
     769361377: {
         "names": ["Сэр", "Шеф", "Босс", "Золотой"],
-        "style": "немного уважения, язвить можно"
+        "style": "мат, язвить можно, отвечать нехотя"
     },
     622827013: {                       # id друга
         "names": ["Дятько", "Трахачь", "Трахуля", "Дидук", "Трахиладзе", "Трахмастер"],
@@ -56,6 +56,11 @@ GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions"
 async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not (msg := update.message) or not msg.text:
         return
+    # ─── отвечаем ~70 % сообщений в группах ───
+    if update.effective_chat.type in ("group", "supergroup"):
+        if random.random() > 0.7:          # 0.7 → 70 % ответов
+            logger.debug("⏭ Пропустил (рандом)")
+            return
 
     user_id, text = msg.from_user.id, msg.text
     logger.info("📥 %s: %s", user_id, text)
@@ -67,7 +72,7 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     alias_idx[user_id] += 1
 
     system_prompt = (
-        "Ты дерзкий Telegram-бот. Мат допустим, но без хейта к защищённым группам. "
+        "Ты дерзкий друг. Мат допустим. "
         f"Обращайся к собеседнику «{alias}». " + persona["style"]
     )
 
