@@ -9,8 +9,8 @@ services:
     autoDeploy: true
     envVars:
       - key: TG_TOKEN
-        sync: false
+        value: your-telegram-bot-token
       - key: GROQ_API_KEY
-        sync: false
+        value: your-groq-key
       - key: GROQ_MODEL
         value: mixtral-8x7b
