@@ -118,9 +118,6 @@ async def on_startup(_: web.Application):
     await application.start()  # ← обязательно запускаем app
     await application.updater.start_polling()  # ← polling после старта
 
-    await application.start()
-    await application.updater.start_polling()
-
 async def on_cleanup(_: web.Application):
     await application.updater.stop()
     await application.stop()
