@@ -94,9 +94,13 @@ async def ping(_: web.Request) -> web.Response:
     return web.Response(text="pong")
 
 async def on_startup(_: web.Application):
-    logger.info("🚀 Запускаю long-polling…")
-    await application.initialize()            # готовим бота
-    await application.start()                 # запускаем polling внутри текущего loop
+    logger.info("🚀 Запускаю polling внутри aiohttp…")
+    # run_polling сам вызовет initialize/start и начнёт long-polling
+    # close_loop=False — не трогаем loop, который уже запущен aiohttp
+    await application.run_polling(
+        stop_signals=None,
+        close_loop=False,
+    )
 
 async def on_cleanup(_: web.Application):
     await application.stop()
