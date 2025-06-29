@@ -11,22 +11,22 @@ from telegram.ext import (
     filters,
 )
 
-# ───── ЛОГИ ─────
+# ───────────  ЛОГИ  ───────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# ───── СОЗДАЁМ application ─────
+# ───────────  СОЗДАЁМ application  ───────────
 application = (
     ApplicationBuilder()
-    .token(os.environ["TG_TOKEN"])
-    .concurrent_updates(True)       # параллельная обработка
+    .token(os.environ["TG_TOKEN"])     # токен задаётся в переменных окружения
+    .concurrent_updates(True)         # обрабатывать апдейты параллельно
     .build()
 )
 
-# ───── PERSONAS ─────
+# ───────────  PERSONAS  ───────────
 PERSONAS = {
     5839634721: {"names": ["Дрюля", "Дрюлькин"], "style": "колкости + мат"},
     769361377: {"names": ["Сэр", "Шеф"], "style": "немного уважения"},
@@ -35,9 +35,9 @@ PERSONAS = {
     617500468: {"names": ["Равлик", "Павидло"], "style": "шутки про диабет"},
 }
 alias_idx = defaultdict(int)
-GROQ_URL  = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions"
 
-# ───── ОБРАБОТЧИК ТЕКСТА ─────
+# ───────────  ОБРАБОТКА ТЕКСТА  ───────────
 async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not (msg := update.message) or not msg.text:
         return
@@ -82,20 +82,21 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     await msg.reply_text(answer)
 
-# ───── /start ─────
+# ───────────  /start  ───────────
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🤖 Бот активен. Жду оскорблений!")
 
 application.add_handler(CommandHandler("start", start_cmd))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
 
-# ───── aiohttp сервер для /ping + запуск polling в фоне ─────
+# ───────────  aiohttp: /ping + запуск polling  ───────────
 async def ping(_: web.Request) -> web.Response:
     return web.Response(text="pong")
 
 async def on_startup(_: web.Application):
     logger.info("🚀 Запускаю long-polling…")
-    asyncio.create_task(application.run_polling())
+    await application.initialize()            # готовим бота
+    await application.start()                 # запускаем polling внутри текущего loop
 
 async def on_cleanup(_: web.Application):
     await application.stop()
@@ -108,5 +109,6 @@ def main() -> None:
     app.on_cleanup.append(on_cleanup)
     web.run_app(app, port=int(os.getenv("PORT", 10000)))
 
+# ───────────  Точка входа  ───────────
 if __name__ == "__main__":
     main()
