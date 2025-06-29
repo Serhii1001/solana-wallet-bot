@@ -94,7 +94,7 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(answer)
 
 # Создаём объект приложения вне функции, чтобы можно было остановить
-application = None
+application = None  # Глобально
 
 async def start_bot(_: web.Application) -> None:
     global application
@@ -104,6 +104,7 @@ async def start_bot(_: web.Application) -> None:
                    .build())
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
+
     await application.initialize()
     await application.start()
 
