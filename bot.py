@@ -4,6 +4,25 @@ from collections import defaultdict
 from aiohttp import web
 from telegram import Update
 from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
+# ─────────── НАСТРОЙКА ЛОГОВ И СОЗДАНИЕ ПРИЛОЖЕНИЯ ───────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+
+application = (ApplicationBuilder()
+               .token(os.environ["TG_TOKEN"])
+               .concurrent_updates(True)
+               .build())
+
+from telegram.ext import CommandHandler
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🤖 Бот активен. Готов к работе!")
+
+# регистрируем хэндлеры один раз
+application.add_handler(CommandHandler("start", start_command))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
 
 # ─────────── ЛИЧНЫЕ ДАННЫЕ / ХАРАКТЕРЫ ───────────
 PERSONAS = {
@@ -36,10 +55,13 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 # ─────────── ОСНОВНОЙ ХЕНДЛЕР ───────────
 async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if update.message:
+        logging.info(f"✅ Получено сообщение: {update.message.text}")
+        await update.message.reply_text("Принял сообщение, обрабатываю...")
+    else:
+        logging.warning("⚠️ update.message отсутствует")
     user_id = update.effective_user.id
     text    = update.effective_message.text or ""
-    logging.info(f"📥 Получено сообщение от {user_id}: {text}")
-    await update.message.reply_text("🔧 Принято! Обрабатываю...")
 
     # 1. Показываем ID, если он ещё не занесён
     if user_id not in PERSONAS:
@@ -100,13 +122,8 @@ application = None  # Глобально
 
 async def start_bot(_: web.Application) -> None:
     global application
-    application = (ApplicationBuilder()
-                   .token(os.environ["TG_TOKEN"])
-                   .concurrent_updates(True)
-                   .build())
-
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
-
+    webhook_url = os.getenv("WEBHOOK_URL")
+    await application.bot.set_webhook(f"{webhook_url}/webhook")
     await application.initialize()
     await application.start()
 
@@ -123,6 +140,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     aio = web.Application()
     aio.router.add_get("/ping", ping)
+    aio.router.add_post("/webhook", application.webhook_handler())
     aio.on_startup.append(start_bot)
     aio.on_cleanup.append(cleanup)
     port = int(os.getenv("PORT", 10000))
