@@ -115,11 +115,11 @@ async def ping(_: web.Request) -> web.Response:
 async def on_startup(_: web.Application):
     logger.info("🚀 Запускаю polling внутри aiohttp…")
     await application.initialize()
+    await application.start()  # ← обязательно запускаем app
+    await application.updater.start_polling()  # ← polling после старта
 
-    # запускаем polling в фоне
-    asyncio.create_task(
-        application.updater.start_polling()
-    )
+    await application.start()
+    await application.updater.start_polling()
 
 async def on_cleanup(_: web.Application):
     await application.updater.stop()
