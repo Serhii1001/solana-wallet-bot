@@ -58,6 +58,12 @@ GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions"
 async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not (msg := update.message) or not msg.text:
         return
+    # ─── отвечаем не на каждое сообщение в группе ───
+    if update.effective_chat.type in ("group", "supergroup"):
+        # 50 % сообщений пропускаем; поменяйте 0.5 на любое число 0-1
+        if random.random() > 0.3:
+            logger.debug("⏭ Пропустил сообщение (рандом)")
+            return
 
     user_id, text = msg.from_user.id, msg.text
     logger.info("📥 %s: %s", user_id, text)
