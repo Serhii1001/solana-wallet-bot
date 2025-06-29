@@ -14,3 +14,5 @@ services:
         value: your-groq-key
       - key: GROQ_MODEL
         value: mixtral-8x7b
+      - key: WEBHOOK_URL
+        value: https://solana-wallet-bot-hgtw.onrender.com
