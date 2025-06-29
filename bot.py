@@ -93,23 +93,35 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     await update.message.reply_text(answer)
 
-# ─────────── СТАРТ БОТА / PING ───────────
+# Создаём объект приложения вне функции, чтобы можно было остановить
+application = None
+
 async def start_bot(_: web.Application) -> None:
-    app = (ApplicationBuilder()
-           .token(os.environ["TG_TOKEN"])
-           .concurrent_updates(True)
-           .build())
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
-    asyncio.create_task(app.run_polling())
+    global application
+    application = (ApplicationBuilder()
+                   .token(os.environ["TG_TOKEN"])
+                   .concurrent_updates(True)
+                   .build())
+
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
+    await application.initialize()
+    await application.start()
 
 async def ping(_: web.Request) -> web.Response:
     return web.Response(text="pong")
+
+async def cleanup(_: web.Application) -> None:
+    global application
+    if application:
+        await application.stop()
+        await application.shutdown()
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     aio = web.Application()
     aio.router.add_get("/ping", ping)
     aio.on_startup.append(start_bot)
+    aio.on_cleanup.append(cleanup)
     port = int(os.getenv("PORT", 10000))
     web.run_app(aio, port=port)
 
