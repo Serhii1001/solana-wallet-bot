@@ -123,6 +123,7 @@ async def on_startup(_: web.Application):
 
 async def on_cleanup(_: web.Application):
     await application.updater.stop()
+    await application.stop()
     await application.shutdown()
 
 def main() -> None:
