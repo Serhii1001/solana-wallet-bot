@@ -75,7 +75,7 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     alias_idx[user_id] += 1
 
     system_prompt = (
-        "Ты дерзкий Telegram-бот. Мат допустим, но без хейта к защищённым группам. "
+        "Ты дерзкий друг. Мат нужен. "
         f"Обращайся к собеседнику «{alias}». " + persona["style"]
     )
 
