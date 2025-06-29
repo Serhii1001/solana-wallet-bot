@@ -116,7 +116,7 @@ async def on_startup(_: web.Application):
     logger.info("🚀 Запускаю polling внутри aiohttp…")
     await application.initialize()
 
-    # запускаем polling в фоне без конфликтов
+    # запускаем polling в фоне
     asyncio.create_task(
         application.updater.start_polling()
     )
