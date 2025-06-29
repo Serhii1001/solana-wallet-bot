@@ -38,6 +38,7 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
     text    = update.effective_message.text or ""
+    logging.info(f"📥 Получено сообщение от {user_id}: {text}")
 
     # 1. Показываем ID, если он ещё не занесён
     if user_id not in PERSONAS:
