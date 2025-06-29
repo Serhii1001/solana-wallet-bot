@@ -1,5 +1,3 @@
-requests
-pyTelegramBotAPI
-openpyxl
-flask
-beautifulsoup4
+python-telegram-bot==22.0
+aiohttp==3.9.5
+requests==2.31.0
