@@ -33,8 +33,8 @@ PERSONAS = {
         "style": "колкости + мат обязмтелен, писать ему сасай, подкалывать насчёт его тупого юмора"
     },
     769361377: {
-        "names": ["Сэр", "Шеф", "Босс", "Золотой"],
-        "style": "общатся уважительно, язвить можно"
+        "names": ["Шеф", "Босс", "Золотой"],
+        "style": "общатся уважительно"
     },
     622827013: {                       # id друга
         "names": ["Дятько", "Трахачь", "Трахуля", "Дидук", "Трахиладзе", "Трахмастер"],
@@ -103,7 +103,7 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 # ───────────  /start  ───────────
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Бот активен. Жду оскорблений!")
+    await update.message.reply_text("Здарова бродяги!")
 
 application.add_handler(CommandHandler("start", start_cmd))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
