@@ -128,4 +128,5 @@ def main() -> None:
     web.run_app(aio, port=port)
 
 if __name__ == "__main__":
-    main()
+    logging.info("🔁 Запуск long polling...")
+    application.run_polling()
