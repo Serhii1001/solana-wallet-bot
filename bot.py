@@ -58,12 +58,6 @@ GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions"
 async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not (msg := update.message) or not msg.text:
         return
-    # ─── отвечаем не на каждое сообщение в группе ───
-    if update.effective_chat.type in ("group", "supergroup"):
-        # 50 % сообщений пропускаем; поменяйте 0.5 на любое число 0-1
-        if random.random() > 0.3:
-            logger.debug("⏭ Пропустил сообщение (рандом)")
-            return
 
     user_id, text = msg.from_user.id, msg.text
     logger.info("📥 %s: %s", user_id, text)
@@ -75,7 +69,7 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     alias_idx[user_id] += 1
 
     system_prompt = (
-        "Ты дерзкий друг. Мат нужен. "
+        "Ты дерзкий Telegram-бот. Мат допустим, но без хейта к защищённым группам. "
         f"Обращайся к собеседнику «{alias}». " + persona["style"]
     )
 
@@ -107,7 +101,7 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 # ───────────  /start  ───────────
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Здарова бродяги!")
+    await update.message.reply_text("🤖 Бот активен. Жду оскорблений!")
 
 application.add_handler(CommandHandler("start", start_cmd))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
@@ -118,8 +112,8 @@ async def ping(_: web.Request) -> web.Response:
 
 async def on_startup(_: web.Application):
     logger.info("🚀 Запускаю polling внутри aiohttp…")
-    await application.initialize()   # подготовка
-    await application.start()        # включает polling, этого достаточно
+    await application.initialize()      # ① подготовка
+    await application.start()           # ② приложение «запущено»
 
 async def on_cleanup(_: web.Application):
     await application.stop()
