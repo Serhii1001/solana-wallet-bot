@@ -107,7 +107,7 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 # ───────────  /start  ───────────
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Бот активен. Жду оскорблений!")
+    await update.message.reply_text("Здарова бродяги!")
 
 application.add_handler(CommandHandler("start", start_cmd))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
@@ -118,8 +118,8 @@ async def ping(_: web.Request) -> web.Response:
 
 async def on_startup(_: web.Application):
     logger.info("🚀 Запускаю polling внутри aiohttp…")
-    await application.initialize()              # подготовка объектов
-    await application.updater.start_polling()   # единственный polling-вызов
+    await application.initialize()   # подготовка
+    await application.start()        # включает polling, этого достаточно
 
 async def on_cleanup(_: web.Application):
     await application.stop()
