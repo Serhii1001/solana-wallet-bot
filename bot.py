@@ -97,7 +97,7 @@ async def on_startup(_: web.Application):
     logger.info("🚀 Запускаю polling внутри aiohttp…")
     await application.initialize()      # ① подготовка
     await application.start()           # ② приложение «запущено»
-    application.updater.start_polling() # ③ поток-polling (без await)
+    asyncio.create_task(application.updater.start_polling())
 
 async def on_cleanup(_: web.Application):
     await application.stop()
