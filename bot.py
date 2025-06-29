@@ -39,6 +39,7 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     user_id = update.effective_user.id
     text    = update.effective_message.text or ""
     logging.info(f"📥 Получено сообщение от {user_id}: {text}")
+    await update.message.reply_text("🔧 Принято! Обрабатываю...")
 
     # 1. Показываем ID, если он ещё не занесён
     if user_id not in PERSONAS:
@@ -128,5 +129,5 @@ def main() -> None:
     web.run_app(aio, port=port)
 
 if __name__ == "__main__":
-    logging.info("🔁 Запуск long polling...")
-    application.run_polling()
+    logging.info("🚀 Запуск через aiohttp на Render...")
+    main()
