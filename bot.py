@@ -3,101 +3,83 @@ import os, asyncio, logging, random, requests
 from collections import defaultdict
 from aiohttp import web
 from telegram import Update
-from telegram.ext import ApplicationBuilder, ContextTypes, MessageHandler, filters
-# ─────────── НАСТРОЙКА ЛОГОВ И СОЗДАНИЕ ПРИЛОЖЕНИЯ ───────────
+from telegram.ext import (
+    ApplicationBuilder,
+    ContextTypes,
+    MessageHandler,
+    CommandHandler,
+    filters,
+)
+
+# ─────────── ЛОГИ И СОЗДАНИЕ ПРИЛОЖЕНИЯ ───────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s"
 )
 
-application = (ApplicationBuilder()
-               .token(os.environ["TG_TOKEN"])
-               .concurrent_updates(True)
-               .build())
-
-from telegram.ext import CommandHandler
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 Бот активен. Готов к работе!")
-
-# регистрируем хэндлеры один раз
-application.add_handler(CommandHandler("start", start_command))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
+application = (
+    ApplicationBuilder()
+    .token(os.environ["TG_TOKEN"])
+    .concurrent_updates(True)          # параллельная обработка
+    .build()
+)
 
 # ─────────── ЛИЧНЫЕ ДАННЫЕ / ХАРАКТЕРЫ ───────────
 PERSONAS = {
-    5839634721: {                       # id друга
+    5839634721: {
         "names": ["Дрюля", "Дрюлькин", "Пидрюлькин"],
-        "style": "колкости + мат, но без оскорблений семьи, писать ему сасай, подкалывать насчёт его тупого юмора"
+        "style": "колкости + мат, но без оскорблений семьи, писать ему сасай, подкалывать насчёт его тупого юмора",
     },
     769361377: {
         "names": ["Сэр", "Шеф", "Босс", "Золотой"],
-        "style": "немного уважения, язвить можно"
+        "style": "немного уважения, язвить можно",
     },
-    622827013: {                       # id друга
+    622827013: {
         "names": ["Дятько", "Трахачь", "Трахуля", "Дидук", "Трахиладзе", "Трахмастер"],
-        "style": "колкости + мат, но без оскорблений семьи, добавить какие то гейские шутки про него"
+        "style": "колкости + мат, но без оскорблений семьи, добавить какие-то гейские шутки про него",
     },
     111111112: {
         "names": ["Бодя"],
-        "style": "колкости + мат, но без оскорблений семьи, добавить какие то гейские шутки про него, максимально жестко оскорблять"
+        "style": "колкости + мат, но без оскорблений семьи, добавить какие-то гейские шутки про него, максимально жестко оскорблять",
     },
     617500468: {
         "names": ["Равлик", "Павлентий", "Павидло", "Бомж бородатый"],
-        "style": "колкости + мат, но без оскорблений семьи, шутки про сахарный диабет и тому подобные, про бороду как у бомжа"
-    }
+        "style": "колкости + мат, но без оскорблений семьи, шутки про диабет, бороду как у бомжа",
+    },
 }
 
-# round-robin счётчик для имён (можно удалить, если хотите random)
-alias_idx = defaultdict(int)
+alias_idx = defaultdict(int)           # round-robin счётчики
+GROQ_URL  = "https://api.groq.com/openai/v1/chat/completions"
 
-GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-
-# ─────────── ОСНОВНОЙ ХЕНДЛЕР ───────────
+# ─────────── ОБРАБОТКА ЛЮБОГО ТЕКСТА ───────────
 async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    if update.message:
-        logging.info(f"✅ Получено сообщение: {update.message.text}")
-        await update.message.reply_text("Принял сообщение, обрабатываю...")
-    else:
-        logging.warning("⚠️ update.message отсутствует")
+    if not update.message or not update.message.text:
+        logging.warning("⚠️ Non-text message ignored")
+        return
+
     user_id = update.effective_user.id
-    text    = update.effective_message.text or ""
+    text    = update.message.text
+    logging.info(f"📥 {user_id}: {text}")
 
-    # 1. Показываем ID, если он ещё не занесён
+    # Сообщаем ID, если пользователь новый
     if user_id not in PERSONAS:
-        info = f"🪪 Новый пользователь: {user_id}"
-        await update.message.reply_text(info)
-        logging.info(info)
-        # дальше ответим нейтрально
+        await update.message.reply_text(f"🪪 Новый пользователь: {user_id}")
 
-    # 2. Берём персоналию (или дефолт)
-    persona = PERSONAS.get(
-        user_id,
-        {"names": ["Гость"], "style": "общайся нейтрально"}
-    )
-    aliases = persona.get("names") or [persona.get("name")]
-
-    #   — вариант RANDOM —
-    # alias = random.choice(aliases)
-
-    #   — вариант ROUND-ROBIN —
-    idx    = alias_idx[user_id] % len(aliases)
-    alias  = aliases[idx]
+    persona = PERSONAS.get(user_id, {"names": ["Гость"], "style": "общайся нейтрально"})
+    alias   = persona["names"][alias_idx[user_id] % len(persona["names"])]
     alias_idx[user_id] += 1
 
     system_prompt = (
-        "Ты дерзкий, агрессивный Telegram-бот. "
-        "Мат допустим, но без хейта к защищённым группам. "
-        f"Обращайся к собеседнику словом «{alias}». "
-        + persona["style"]
+        "Ты дерзкий, агрессивный Telegram-бот. Мат допустим, но без хейта к защищённым группам. "
+        f"Обращайся к собеседнику словом «{alias}». " + persona["style"]
     )
 
     payload = {
         "model": os.getenv("GROQ_MODEL", "mixtral-8x7b"),
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": text}
-        ]
+            {"role": "user",   "content": text},
+        ],
     }
 
     try:
@@ -105,9 +87,10 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             GROQ_URL,
             headers={
                 "Authorization": f"Bearer {os.environ['GROQ_API_KEY']}",
-                "Content-Type": "application/json"
+                "Content-Type":  "application/json",
             },
-            json=payload, timeout=15
+            json=payload,
+            timeout=15,
         )
         r.raise_for_status()
         answer = r.json()["choices"][0]["message"]["content"]
@@ -117,13 +100,22 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
     await update.message.reply_text(answer)
 
-# Создаём объект приложения вне функции, чтобы можно было остановить
-application = None  # Глобально
+# ─────────── /start ───────────
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🤖 Бот активен. Готов к работе!")
 
+# регистрируем хэндлеры один раз
+application.add_handler(CommandHandler("start", start_command))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
+
+# ─────────── СТАРТ / ОСТАНОВКА ───────────
 async def start_bot(_: web.Application) -> None:
-    global application
     webhook_url = os.getenv("WEBHOOK_URL")
+    if not webhook_url:
+        logging.error("❌ WEBHOOK_URL не задан!")
+        return
     await application.bot.set_webhook(f"{webhook_url}/webhook")
+    logging.info(f"✅ Webhook установлен: {webhook_url}/webhook")
     await application.initialize()
     await application.start()
 
@@ -131,13 +123,10 @@ async def ping(_: web.Request) -> web.Response:
     return web.Response(text="pong")
 
 async def cleanup(_: web.Application) -> None:
-    global application
-    if application:
-        await application.stop()
-        await application.shutdown()
+    await application.stop()
+    await application.shutdown()
 
 def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     aio = web.Application()
     aio.router.add_get("/ping", ping)
     aio.router.add_post("/webhook", application.webhook_handler())
@@ -146,6 +135,7 @@ def main() -> None:
     port = int(os.getenv("PORT", 10000))
     web.run_app(aio, port=port)
 
+# ─────────── Точка входа ───────────
 if __name__ == "__main__":
-    logging.info("🚀 Запуск через aiohttp на Render...")
+    logging.info("🚀 Запуск через aiohttp на Render…")
     main()
