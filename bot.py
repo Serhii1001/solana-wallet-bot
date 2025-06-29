@@ -34,7 +34,7 @@ PERSONAS = {
     },
     769361377: {
         "names": ["Сэр", "Шеф", "Босс", "Золотой"],
-        "style": "немного уважения, язвить можно"
+        "style": "матом можно, язвить можно"
     },
     622827013: {                       # id друга
         "names": ["Дятько", "Трахачь", "Трахуля", "Дидук", "Трахиладзе", "Трахмастер"],
@@ -72,7 +72,7 @@ async def handle_msg(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     alias_idx[user_id] += 1
 
     system_prompt = (
-        "Ты дерзкий Telegram-бот. Мат допустим, но без хейта к защищённым группам. "
+        "Ты человек и дерзкий друг. Общатся нужно только с матом и на ты. Можно посылать. Применяй к каждому свой style"
         f"Обращайся к собеседнику «{alias}». " + persona["style"]
     )
 
@@ -116,6 +116,7 @@ async def ping(_: web.Request) -> web.Response:
 async def on_startup(_: web.Application):
     logger.info("🚀 Запускаю polling внутри aiohttp…")
     await application.initialize()      # ① подготовка
+    await application.start()           # ② приложение «запущено»
     asyncio.create_task(application.updater.start_polling())
 
 async def on_cleanup(_: web.Application):
