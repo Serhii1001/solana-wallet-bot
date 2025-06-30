@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os, logging, random, requests, asyncio
+import sys
 from collections import defaultdict
 from aiohttp import web
 from telegram import Update
@@ -38,11 +39,11 @@ PERSONAS = {
     },
     622827013: {                       # id друга
         "names": ["Дятько", "Трахачь", "Трахуля", "Дидук", "Трахиладзе", "Трахмастер"],
-        "style": "колкости + мат, добавить какие то гейские шутки про него"
+        "style": "колкости + мат"
     },
     111111112: {
-        "names": ["Бодя", "Пёс", "Индюк", "Черномырдин", "Негрюля", "Чернозем", "Гуталин", "Годя"],
-        "style": "колкости + мат,  добавить какие то гейские шутки про него, максимально жестко оскорблять, придумывать пошлые гейские истории про него"
+        "names": ["Бодя", "Пёс", "Индюк"],
+        "style": "колкости + мат, максимально жестко оскорблять"
     },
     617500468: {
         "names": ["Равлик", "Павлентий", "Павидло", "Бомж бородатый"],
@@ -108,6 +109,12 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 application.add_handler(CommandHandler("start", start_cmd))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_msg))
 
+# ───────────  АВТОМАТИЧЕСКИЙ ВЫХОД ЧЕРЕЗ 10 МИНУТ  ───────────
+async def shutdown_after_delay(delay: int):
+    await asyncio.sleep(delay)
+    logger.info("⏱ Время вышло, бот завершает работу для перезапуска...")
+    sys.exit(0)
+
 # ───────────  aiohttp: /ping + запуск polling  ───────────
 async def ping(_: web.Request) -> web.Response:
     return web.Response(text="pong")
@@ -115,11 +122,11 @@ async def ping(_: web.Request) -> web.Response:
 async def on_startup(_: web.Application):
     logger.info("🚀 Запускаю polling внутри aiohttp…")
     await application.initialize()
-    await application.start()  # ← обязательно запускаем app
-    await application.updater.start_polling()  # ← polling после старта
+    await application.start()
+    await application.updater.start_polling()   # ← ЭТО ГЛАВНОЕ
+    asyncio.create_task(shutdown_after_delay(600))  # ⏱ через 10 минут выключение
 
 async def on_cleanup(_: web.Application):
-    await application.updater.stop()
     await application.stop()
     await application.shutdown()
 
